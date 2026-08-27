@@ -1,122 +1,96 @@
-import { useState } from 'react'
-import heroImg from './assets/hero.png'
-import reactLogo from './assets/react.svg'
-import viteLogo from './assets/vite.svg'
-import './App.css'
+import { AnimatePresence, motion } from "framer-motion";
+import useSession from "@/hooks/useSession";
+import useChat from "@/hooks/useChat";
+import LiquidBackground from "@/components/ui/LiquidBackground";
+import OnboardingScreen from "@/components/onboarding/OnboardingScreen";
+import WelcomeScreen from "@/components/welcome/WelcomeScreen";
+import ChatWindow from "@/components/chat/ChatWindow";
+import ProductGrid from "@/components/products/ProductGrid";
+import FloatingCartButton from "@/components/cart/FloatingCartButton";
+import CartModal from "@/components/cart/CartModal";
+import { useState } from "react";
 
 function App() {
-  const [count, setCount] = useState(0)
+  const { session, step, completeOnboarding, startShopping } = useSession();
+  const chat = useChat(session);
+  const [cartOpen, setCartOpen] = useState(false);
+
+  // Find last products message for rendering grid
+  const lastProductsMsg = [...chat.messages]
+    .reverse()
+    .find((m) => m.type === "products" && m.products?.length > 0);
 
   return (
-    <>
-      <section id="center">
-        <div className="hero">
-          <img src={heroImg} className="base" width="170" height="179" alt="" />
-          <img src={reactLogo} className="framework" alt="React logo" />
-          <img src={viteLogo} className="vite" alt="Vite logo" />
-        </div>
-        <div>
-          <h1>Get started</h1>
-          <p>
-            Edit <code>src/App.jsx</code> and save to test <code>HMR</code>
-          </p>
-        </div>
-        <button
-          type="button"
-          className="counter"
-          onClick={() => setCount((count) => count + 1)}
-        >
-          Count is {count}
-        </button>
-      </section>
+    <LiquidBackground>
+      <AnimatePresence mode="wait">
+        {step === "onboarding" && (
+          <motion.div
+            key="onboarding"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <OnboardingScreen onComplete={completeOnboarding} />
+          </motion.div>
+        )}
 
-      <div className="ticks"></div>
+        {step === "welcome" && (
+          <motion.div
+            key="welcome"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <WelcomeScreen name={session?.name} onContinue={startShopping} />
+          </motion.div>
+        )}
 
-      <section id="next-steps">
-        <div id="docs">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#documentation-icon"></use>
-          </svg>
-          <h2>Documentation</h2>
-          <p>Your questions, answered</p>
-          <ul>
-            <li>
-              <a href="https://vite.dev/" target="_blank">
-                <img className="logo" src={viteLogo} alt="" />
-                Explore Vite
-              </a>
-            </li>
-            <li>
-              <a href="https://react.dev/" target="_blank">
-                <img className="button-icon" src={reactLogo} alt="" />
-                Learn more
-              </a>
-            </li>
-          </ul>
-        </div>
-        <div id="social">
-          <svg className="icon" role="presentation" aria-hidden="true">
-            <use href="/icons.svg#social-icon"></use>
-          </svg>
-          <h2>Connect with us</h2>
-          <p>Join the Vite community</p>
-          <ul>
-            <li>
-              <a href="https://github.com/vitejs/vite" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#github-icon"></use>
-                </svg>
-                GitHub
-              </a>
-            </li>
-            <li>
-              <a href="https://chat.vite.dev/" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#discord-icon"></use>
-                </svg>
-                Discord
-              </a>
-            </li>
-            <li>
-              <a href="https://x.com/vite_js" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#x-icon"></use>
-                </svg>
-                X.com
-              </a>
-            </li>
-            <li>
-              <a href="https://bsky.app/profile/vite.dev" target="_blank">
-                <svg
-                  className="button-icon"
-                  role="presentation"
-                  aria-hidden="true"
-                >
-                  <use href="/icons.svg#bluesky-icon"></use>
-                </svg>
-                Bluesky
-              </a>
-            </li>
-          </ul>
-        </div>
-      </section>
+        {step === "chat" && (
+          <motion.div
+            key="chat"
+            className="h-screen flex flex-col"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+          >
+            <ChatWindow
+              messages={chat.messages}
+              isTyping={chat.isTyping}
+              onSend={chat.sendMessage}
+              onOptionSelect={chat.selectOption}
+            />
 
-      <div className="ticks"></div>
-      <section id="spacer"></section>
-    </>
-  )
+            {/* Product grid rendered below chat messages when products are shown */}
+            {lastProductsMsg && (
+              <div className="border-t border-border bg-background/80 backdrop-blur-sm max-h-[40vh] overflow-y-auto">
+                <ProductGrid
+                  products={lastProductsMsg.products}
+                  cart={chat.cart}
+                  onAddToCart={chat.addToCart}
+                />
+              </div>
+            )}
+
+            <FloatingCartButton
+              count={chat.cart.length}
+              onClick={() => setCartOpen(true)}
+            />
+
+            <CartModal
+              isOpen={cartOpen}
+              items={chat.cart}
+              onClose={() => setCartOpen(false)}
+              onConfirm={() => {
+                chat.confirmOrder();
+                setCartOpen(false);
+              }}
+              onRemove={chat.removeFromCart}
+            />
+          </motion.div>
+        )}
+      </AnimatePresence>
+    </LiquidBackground>
+  );
 }
 
-export default App
+export default App;
