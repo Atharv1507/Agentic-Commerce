@@ -1,4 +1,8 @@
 {
   "plugin": ["@dietrichgebert/ponytail"],
-  "skills": ["./Shopper Agent/.agents/skills/shadcn"]
+  "skills": [
+    "./Shopper Agent/.agents/skills/shadcn",
+    "./.opencode/skills/ui-ux-pro-max",
+    "./apple-design-skill"
+  ]
 }
