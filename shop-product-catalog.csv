@@ -1,0 +1,130 @@
+ProductID,ProductName,ProductBrand,Gender,Price,Description,PrimaryColor
+1000,Presto Fly 3,Nike,Women,10999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Pink
+1001,Superstar Bold 2,Adidas,Men,11999,Classic basketball shoes with a modern twist and bold design,Black
+1002,Old Skool Lite 3,Vans,Unisex,4999,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Grey
+1003,Air Zoom Structure 2,Nike,Men,12999,Supportive and responsive running shoes with a breathable upper and flexible sole,Blue
+1004,Flyknit Racer,Nike,Women,9999,Lightweight and breathable running shoes,Pink
+1005,Superstar Foundation,Adidas,Men,7999,Classic basketball shoes with a modern twist,White
+1006,Old Skool,Vans,Unisex,4499,Iconic skateboarding shoes with a relaxed fit,Navy
+1007,Air Zoom Pegasus,Nike,Women,10999,Responsive and supportive running shoes,Purple
+1008,Stan Smith,Adidas,Unisex,6999,Classic tennis shoes with a minimalist design,Green
+1009,Sk8-Hi MTE,Vans,Men,5299,Water-resistant skateboarding shoes with a rugged sole,Brown
+1010,Free RN 2,Nike,Women,8999,Flexible and lightweight running shoes,Blue
+1011,Yung-1,Adidas,Men,9999,Retro-inspired running shoes with a bold design,Grey
+1012,Authentic,Vans,Unisex,3999,Classic deck shoes with a relaxed fit,Red
+1013,Air Force 1,Nike,Unisex,10999,Iconic basketball shoes with a bold design,Black
+1014,Gazelle,Adidas,Women,7999,Retro-inspired running shoes with a sleek design,White
+1015,Era,Vans,Men,4999,Classic skateboarding shoes with a low-profile sole,Navy
+1016,Presto Fly,Nike,Women,8999,Lightweight and breathable running shoes,Pink
+1017,Superstar Bold,Adidas,Men,9999,Classic basketball shoes with a modern twist,Black
+1018,Old Skool Lite,Vans,Unisex,3999,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Grey
+1019,Air Zoom Structure,Nike,Men,10999,Supportive and responsive running shoes,Blue
+1020,Stan Smith Bold,Adidas,Unisex,7999,Classic tennis shoes with a bold design,Red
+1021,Sk8-Hi Pro,Vans,Men,5999,Water-resistant skateboarding shoes with a rugged sole,Brown
+1022,Free RN Flyknit,Nike,Women,9999,Flexible and lightweight running shoes with a breathable upper,Purple
+1023,Yung-96,Adidas,Men,8999,Retro-inspired running shoes with a bold design,Grey
+1024,Authentic Lite,Vans,Unisex,3499,Classic deck shoes with a relaxed fit and lightweight sole,Navy
+1025,Air Max 270,Nike,Unisex,10999,Max Air unit for maximum comfort and impact protection,Black
+1026,Gazelle Bold,Adidas,Women,8999,Retro-inspired running shoes with a sleek design and bold colors,White
+1027,Era Pro,Vans,Men,5499,Classic skateboarding shoes with a low-profile sole and supportive upper,Red
+1028,Presto Fly 2,Nike,Women,9999,Lightweight and breathable running shoes with a flexible sole,Pink
+1029,Superstar Foundation 2,Adidas,Men,10999,Classic basketball shoes with a modern twist and bold design,Black
+1030,Old Skool Lite 2,Vans,Unisex,4499,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Grey
+1031,Air Zoom Pegasus 2,Nike,Women,11999,Responsive and supportive running shoes with a breathable upper,Purple
+1032,Stan Smith Pro,Adidas,Unisex,8999,Classic tennis shoes with a bold design and supportive upper,Red
+1033,Sk8-Hi MTE 2,Vans,Men,6299,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Brown
+1034,Free RN 3,Nike,Women,10999,Flexible and lightweight running shoes with a breathable upper and flexible sole,Blue
+1035,Yung-1 Pro,Adidas,Men,10999,Retro-inspired running shoes with a bold design and supportive upper,Grey
+1036,Authentic Pro,Vans,Unisex,4999,Classic deck shoes with a relaxed fit and supportive upper,Navy
+1037,Air Force 1 Pro,Nike,Unisex,12999,Iconic basketball shoes with a bold design and supportive upper,Black
+1038,Gazelle Pro,Adidas,Women,9999,Retro-inspired running shoes with a sleek design and supportive upper,White
+1039,Era Pro 2,Vans,Men,5999,Classic skateboarding shoes with a low-profile sole and supportive upper,Red
+1040,Era Pro 2,Vans,Men,5999,Classic skateboarding shoes with a low-profile sole and supportive upper,Red
+1041,Presto Fly 3,Nike,Women,10999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Pink
+1042,Superstar Bold 2,Adidas,Men,11999,Classic basketball shoes with a modern twist and bold design,Black
+1043,Old Skool Lite 3,Vans,Unisex,4999,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Grey
+1044,Air Zoom Structure 2,Nike,Men,12999,Supportive and responsive running shoes with a breathable upper and flexible sole,Blue
+1045,Stan Smith Bold 2,Adidas,Unisex,9999,Classic tennis shoes with a bold design and supportive upper,Red
+1046,Sk8-Hi Pro 2,Vans,Men,6999,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Brown
+1047,Air Force 1 Pro 2,Nike,Unisex,13999,Iconic basketball shoes with a bold design and supportive upper,Navy
+1048,Gazelle Pro 2,Adidas,Women,10999,Retro-inspired running shoes with a sleek design and supportive upper,Purple
+1049,Era Pro 3,Vans,Men,6499,Classic skateboarding shoes with a low-profile sole and supportive upper,Grey
+1050,Presto Fly 4,Nike,Women,11999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Pink
+1051,Superstar Bold 3,Adidas,Men,12999,Classic basketball shoes with a modern twist and bold design,Black
+1052,Old Skool Lite 4,Vans,Unisex,5499,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Brown
+1053,Air Zoom Structure 3,Nike,Men,14999,Supportive and responsive running shoes with a breathable upper and flexible sole,Blue
+1054,Stan Smith Bold 3,Adidas,Unisex,10999,Classic tennis shoes with a bold design and supportive upper,Red
+1055,Sk8-Hi Pro 3,Vans,Men,7499,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Grey
+1056,Air Force 1 Pro 3,Nike,Unisex,14999,Iconic basketball shoes with a bold design and supportive upper,Navy
+1057,Gazelle Pro 3,Adidas,Women,11999,Retro-inspired running shoes with a sleek design and supportive upper,Purple
+1058,Era Pro 4,Vans,Men,6999,Classic skateboarding shoes with a low-profile sole and supportive upper,Red
+1059,Presto Fly 5,Nike,Women,12999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Pink
+1060,Superstar Bold 4,Adidas,Men,13999,Classic basketball shoes with a modern twist and bold design,Black
+1061,Old Skool Lite 5,Vans,Unisex,5999,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Brown
+1062,Air Zoom Structure 4,Nike,Men,15999,Supportive and responsive running shoes with a breathable upper and flexible sole,Blue
+1063,Stan Smith Bold 4,Adidas,Unisex,11999,Classic tennis shoes with a bold design and supportive upper,Red
+1064,Sk8-Hi Pro 4,Vans,Men,7999,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Grey
+1065,Air Force 1 Pro 4,Nike,Unisex,15999,Iconic basketball shoes with a bold design and supportive upper,Navy
+1066,Gazelle Pro 4,Adidas,Women,12999,Retro-inspired running shoes with a sleek design and supportive upper,Purple
+1067,Era Pro 5,Vans,Men,7499,Classic skateboarding shoes with a low-profile sole and supportive upper,Red
+1068,Presto Fly 6,Nike,Women,13999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Pink
+1069,Superstar Bold 5,Adidas,Men,14999,Classic basketball shoes with a modern twist and bold design,Black
+1070,Old Skool Lite 6,Vans,Unisex,6499,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Brown
+1071,Air Zoom Structure 5,Nike,Men,16999,Supportive and responsive running shoes with a breathable upper and flexible sole,Blue
+1072,Stan Smith Bold 5,Adidas,Unisex,12999,Classic tennis shoes with a bold design and supportive upper,Red
+1073,Sk8-Hi Pro 5,Vans,Men,8499,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Grey
+1074,Air Force 1 Pro 5,Nike,Unisex,16999,Iconic basketball shoes with a bold design and supportive upper,Navy
+1075,Gazelle Pro 5,Adidas,Women,13999,Retro-inspired running shoes with a sleek design and supportive upper,Purple
+1076,Era Pro 6,Vans,Men,7999,Classic skateboarding shoes with a low-profile sole and supportive upper,Red
+1077,Presto Fly 7,Nike,Women,14999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Pink
+1078,Superstar Bold 6,Adidas,Men,15999,Classic basketball shoes with a modern twist and bold design,Black
+1079,Old Skool Lite 7,Vans,Unisex,6999,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Brown
+1080,Air Zoom Structure 6,Nike,Men,17999,Supportive and responsive running shoes with a breathable upper and flexible sole,Blue
+1081,Stan Smith Bold 6,Adidas,Unisex,13999,Classic tennis shoes with a bold design and supportive upper,Red
+1082,Sk8-Hi Pro 6,Vans,Men,8999,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Grey
+1083,Air Force 1 Pro 6,Nike,Unisex,17999,Iconic basketball shoes with a bold design and supportive upper,Navy
+1084,Gazelle Pro 6,Adidas,Women,14999,Retro-inspired running shoes with a sleek design and supportive upper,Purple
+1085,Era Pro 7,Vans,Men,8499,Classic skateboarding shoes with a low-profile sole and supportive upper,Red
+1086,Presto Fly 8,Nike,Women,15999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Pink
+1087,Free 7,Nike,Men,14999,Flexible and breathable running shoes with a lightweight sole and supportive upper,Navy
+1088,Rival 7,Adidas,Women,13999,Retro-inspired running shoes with a sleek design and supportive upper,Grey
+1089,Sk8-Hi Pro 7,Vans,Men,9299,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Black
+1090,Air Zoom Pegasus 5,Nike,Men,17999,Supportive and responsive running shoes with a breathable upper and flexible sole,Red
+1091,Stan Smith Pro 5,Adidas,Unisex,14999,Classic tennis shoes with a bold design and supportive upper,Green
+1092,Old Skool Lite 8,Vans,Unisex,7499,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Purple
+1093,Air Force 1 Pro 7,Nike,Unisex,18999,Iconic basketball shoes with a bold design and supportive upper,Blue
+1094,Gazelle Pro 7,Adidas,Women,15999,Retro-inspired running shoes with a sleek design and supportive upper,Pink
+1095,Era Pro 8,Vans,Men,8999,Classic skateboarding shoes with a low-profile sole and supportive upper,Grey
+1096,Presto Fly 9,Nike,Women,16999,Lightweight and breathable running shoes with a flexible sole and supportive upper,Navy
+1097,Superstar Pro 5,Adidas,Men,16999,Classic basketball shoes with a modern twist and bold design,Red
+1098,Sk8-Hi Pro 8,Vans,Men,9599,Water-resistant skateboarding shoes with a rugged sole and supportive upper,Brown
+1099,Air Zoom Structure 7,Nike,Men,18999,Supportive and responsive running shoes with a breathable upper and flexible sole,Black
+1100,Stan Smith Pro 6,Adidas,Unisex,15999,Classic tennis shoes with a bold design and supportive upper,Green
+1101,Old Skool Lite 9,Vans,Unisex,7999,Iconic skateboarding shoes with a relaxed fit and lightweight sole,Purple
+1102,Air Force 1 Pro 8,Nike,Unisex,19999,Iconic basketball shoes with a bold design and supportive upper,Blue
+1103,Gazelle Pro 8,Adidas,Women,16999,Retro-inspired running shoes with a sleek design and supportive upper,Pink
+1104,Air Max 90,Nike,Men,8999,Comfortable running shoes,Black
+1105,Ultraboost 21,Adidas,Men,11999,High-performance training sneakers,White
+1106,Classic Slip-On,Vans,Unisex,3499,Easy slip-on casual shoes,Black
+1107,Chuck Taylor All Star,Converse,Women,2999,Iconic canvas sneakers,Red
+1108,Old Skool,Vans,Men,4599,Suede low-top skate shoes,Navy Blue
+1109,Gel-Kayano 28,ASICS,Men,9999,Stability running shoes,Grey
+1110,Fresh Foam 1080,New Balance,Women,10499,Cushioned athletic shoes,Pink
+1111,Air Force 1,Nike,Unisex,7999,Timeless streetwear classic,White
+1112,Yeezy Boost 350,Adidas,Unisex,17999,Fashion-forward sneakers,Cream
+1113,Ignite Flash,Puma,Women,3999,Lightweight training shoes,Coral
+1114,ZoomX Vaporfly,Nike,Men,18999,Elite marathon racing shoes,Green
+1115,Cloud X,On Running,Men,11299,Cross-training and running,Black
+1116,Adilette Slides,Adidas,Unisex,1999,Comfortable pool slides,Blue
+1117,React Infinity Run,Nike,Women,12499,Injury-preventive running shoes,Purple
+1118,RS-X3 Puzzle,Puma,Unisex,6799,Chunky retro sneakers,Multi-color
+1119,997H,New Balance,Men,5999,Heritage-inspired casual wear,Olive Green
+1120,Classic Leather,Reebok,Women,4999,Retro style everyday wear,Beige
+1121,Legend Essential,Nike,Women,3799,Training gym shoes,Black
+1122,Superstar,Adidas,Unisex,7499,Iconic street-style shell-toe shoes,White
+1123,Bamba,Decathlon,Men,1299,Affordable football shoes,Orange
+1124,Club C Revenge,Reebok,Men,5899,Tennis-inspired casual wear,White
+1125,Phantom GX,Nike,Men,9999,Precision football boots,Blue
+1126,Floatride Energy,Reebok,Women,6599,Smooth ride running shoes,Pink
+1127,Speedcross 5,Salomon,Men,9999,Trail running and hiking shoes,Green
+1128,Grand Court,Adidas,Unisex,4299,Classic court-style sneakers,Black

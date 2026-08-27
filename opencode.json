@@ -1,0 +1,4 @@
+{
+  "plugin": ["@dietrichgebert/ponytail"],
+  "skills": ["./Shopper Agent/.agents/skills/shadcn"]
+}
