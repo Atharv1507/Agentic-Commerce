@@ -8,7 +8,9 @@ from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 
-from tools import TOOLS_SCHEMA, execute_tool
+from config import SYSTEM_PROMPT, OPENAI_MODEL, SELLER_AGENT_PORT, SESSION_HISTORY_LIMIT
+from schemas import TOOLS_SCHEMA
+from handlers import execute_tool
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -20,35 +22,6 @@ app = FastAPI(title="Seller Agent")
 openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 sessions: dict[str, list[dict[str, Any]]] = {}
-
-SYSTEM_PROMPT = """You are a merchant assistant for a shoe store. You help find products, check stock, and create orders.
-
-You have 3 tools:
-1. search_catalog(query, max_price?, gender?) - Search products by natural language with optional filters
-2. check_stock(product_id) - Check if a product is in stock
-3. create_order(product_id, buyer_name, buyer_address) - Create a Razorpay order
-
-WORKFLOW FOR ORDERS:
-When user wants to buy a product:
-1. FIRST call check_stock to verify availability
-2. IF in stock, IMMEDIATELY call create_order with the product_id, buyer_name, and buyer_address
-3. DO NOT stop after check_stock - you MUST call create_order if in stock
-4. ONLY if out of stock, inform the user
-
-RULES:
-- If the message mentions a budget/price limit → USE the max_price parameter in search_catalog
-- If the message specifies gender → USE the gender parameter in search_catalog
-- If the message is about finding/searching products → call search_catalog
-- If the message mentions buying/ordering with all details (product_id, buyer_name, address) → call check_stock THEN create_order
-- If information is missing to call a tool (e.g., no buyer name/address for order), ask for it
-- If no products match the query, say "No products fit your description" - do NOT make up products
-- Only show products that match the user's criteria (price, gender, etc.)
-- For upsell/cross-sell: after showing main results, suggest 1-2 complementary options if relevant
-
-Response format:
-- Always respond in natural language
-- Include structured data when showing products (id, name, price, brand)
-- Be helpful and concise"""
 
 
 class MessageRequest(BaseModel):
@@ -76,11 +49,11 @@ async def handle_message(request: MessageRequest) -> dict[str, Any]:
     sessions[session_id].append({"role": "user", "content": request.text})
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(sessions[session_id][-20:])
+    messages.extend(sessions[session_id][-SESSION_HISTORY_LIMIT:])
 
     try:
         response = openai_client.chat.completions.create(
-            model="gpt-4o-mini",
+            model=OPENAI_MODEL,
             messages=messages,
             tools=TOOLS_SCHEMA,
             tool_choice="auto",
@@ -135,16 +108,13 @@ async def handle_message(request: MessageRequest) -> dict[str, Any]:
                 )
 
             response = openai_client.chat.completions.create(
-                model="gpt-4o-mini",
+                model=OPENAI_MODEL,
                 messages=[{"role": "system", "content": SYSTEM_PROMPT}]
-                + sessions[session_id][-20:],
+                + sessions[session_id][-SESSION_HISTORY_LIMIT:],
                 tools=TOOLS_SCHEMA,
                 tool_choice="auto",
             )
             assistant_message = response.choices[0].message
-            logger.info(
-                f"After tool call - content: {assistant_message.content[:50] if assistant_message.content else 'None'}..."
-            )
 
         final_message = assistant_message.content
         sessions[session_id].append({"role": "assistant", "content": final_message})
@@ -161,15 +131,11 @@ async def handle_message(request: MessageRequest) -> dict[str, Any]:
 
 @app.get("/health")
 async def health() -> dict[str, int]:
-    """Health check endpoint.
-
-    Returns:
-        Dict with status and active session count.
-    """
+    """Health check endpoint."""
     return {"status": "ok", "active_sessions": len(sessions)}
 
 
 if __name__ == "__main__":
     import uvicorn
 
-    uvicorn.run(app, host="0.0.0.0", port=8001)
+    uvicorn.run(app, host="0.0.0.0", port=SELLER_AGENT_PORT)
