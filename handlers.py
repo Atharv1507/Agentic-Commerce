@@ -83,7 +83,7 @@ def pay_order(
         buyer_address: Delivery address.
 
     Returns:
-        Dict with order details or error.
+        Dict with order details for frontend payment processing.
     """
     try:
         order = razorpay_client.order.create(
@@ -106,10 +106,34 @@ def pay_order(
                 "phone": buyer_phone,
                 "address": buyer_address,
             },
+            "status": "created",
+            "message": "Order created. Complete payment in the checkout modal.",
         }
     except Exception as e:
         logger.error(f"Razorpay error: {e}")
         return {"error": "order_creation_failed"}
+
+
+def verify_payment(order_id: str) -> dict[str, Any]:
+    """Verify payment status for an order.
+
+    Args:
+        order_id: The Razorpay order ID.
+
+    Returns:
+        Dict with payment status.
+    """
+    try:
+        order = razorpay_client.order.fetch(order_id)
+        logger.info(f"Payment verified for {order_id}: {order['status']}")
+        return {
+            "order_id": order["id"],
+            "status": order["status"],
+            "amount": order["amount"],
+        }
+    except Exception as e:
+        logger.error(f"Payment verification error: {e}")
+        return {"error": "verification_failed"}
 
 
 def execute_tool(tool_name: str, arguments: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
@@ -140,6 +164,8 @@ def execute_tool(tool_name: str, arguments: dict[str, Any], session: dict[str, A
             buyer_phone=user.get("phone", arguments.get("buyer_phone", "")),
             buyer_address=user.get("address", arguments.get("buyer_address", "")),
         )
+    elif tool_name == "verify_payment":
+        return verify_payment(arguments["order_id"])
 
     logger.error(f"Unknown tool: {tool_name}")
     return {"error": "unknown_tool"}

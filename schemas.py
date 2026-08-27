@@ -85,4 +85,21 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
             },
         },
     },
+    {
+        "type": "function",
+        "function": {
+            "name": "verify_payment",
+            "description": "Verify payment status for an order after user completes payment in frontend.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "order_id": {
+                        "type": "string",
+                        "description": "The Razorpay order ID to verify",
+                    }
+                },
+                "required": ["order_id"],
+            },
+        },
+    },
 ]
