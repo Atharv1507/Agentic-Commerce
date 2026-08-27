@@ -1,104 +1,138 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-import chromadb
-import json
+from openai import OpenAI
 from dotenv import load_dotenv
+import json
 import os
+
+from tools import TOOLS_SCHEMA, execute_tool
 
 load_dotenv()
 
 app = FastAPI(title="Seller Agent")
 
-# ChromaDB setup
-chroma_client = chromadb.Client()
-collection = chroma_client.create_collection(name="products")
+openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
-# Load catalog
-def load_catalog():
-    with open("catalog.json", "r") as f:
-        products = json.load(f)
-    
-    # Add to ChromaDB
-    collection.add(
-        ids=[p["id"] for p in products],
-        documents=[p["description"] for p in products],
-        metadatas=[{
-            "name": p["name"],
-            "brand": p["brand"],
-            "price": p["price"],
-            "color": p["color"],
-            "gender": p["gender"]
-        } for p in products]
-    )
-    print(f"Loaded {len(products)} products into ChromaDB")
+sessions = {}
 
-load_catalog()
+SYSTEM_PROMPT = """You are a merchant assistant for a shoe store. You help find products, check stock, and create orders.
 
-class QueryRequest(BaseModel):
-    query: str
-    max_price: int = None
-    top_k: int = 5
+You have 3 tools:
+1. search_catalog(query, max_price?, gender?) - Search products by natural language with optional filters
+2. check_stock(product_id) - Check if a product is in stock
+3. create_order(product_id, buyer_name, buyer_address) - Create a Razorpay order
 
-@app.post("/query")
-async def query_products(request: QueryRequest):
-    if not request.query.strip():
-        raise HTTPException(status_code=400, detail="Query cannot be empty")
-    
-    results = collection.query(
-        query_texts=[request.query],
-        n_results=request.top_k
-    )
-    
-    if not results["ids"][0]:
-        return {"status": "no_match", "message": "No matching products found", "products": []}
-    
-    products = []
-    for i, pid in enumerate(results["ids"][0]):
-        meta = results["metadatas"][0][i]
-        product = {
-            "id": pid,
-            "name": meta["name"],
-            "brand": meta["brand"],
-            "price": meta["price"],
-            "color": meta["color"],
-            "gender": meta["gender"],
-            "description": results["documents"][0][i]
-        }
-        
-        # Budget filter
-        if request.max_price and meta["price"] > request.max_price:
-            continue
-        
-        products.append(product)
-    
-    if not products:
-        return {"status": "no_match", "message": "No products within budget", "products": []}
-    
-    return {"status": "success", "products": products}
+WORKFLOW FOR ORDERS:
+When user wants to buy a product:
+1. FIRST call check_stock to verify availability
+2. IF in stock, IMMEDIATELY call create_order with the product_id, buyer_name, and buyer_address
+3. DO NOT stop after check_stock - you MUST call create_order if in stock
+4. ONLY if out of stock, inform the user
 
-@app.get("/products/{product_id}")
-async def get_product(product_id: str):
+RULES:
+- If the message mentions a budget/price limit → USE the max_price parameter in search_catalog
+- If the message specifies gender → USE the gender parameter in search_catalog
+- If the message is about finding/searching products → call search_catalog
+- If the message mentions buying/ordering with all details (product_id, buyer_name, address) → call check_stock THEN create_order
+- If information is missing to call a tool (e.g., no buyer name/address for order), ask for it
+- If no products match the query, say "No products fit your description" - do NOT make up products
+- Only show products that match the user's criteria (price, gender, etc.)
+- For upsell/cross-sell: after showing main results, suggest 1-2 complementary options if relevant
+
+Response format:
+- Always respond in natural language
+- Include structured data when showing products (id, name, price, brand)
+- Be helpful and concise"""
+
+class MessageRequest(BaseModel):
+    session_id: str
+    text: str
+
+@app.post("/message")
+async def handle_message(request: MessageRequest):
+    session_id = request.session_id
+    
+    if session_id not in sessions:
+        sessions[session_id] = []
+    
+    sessions[session_id].append({
+        "role": "user",
+        "content": request.text
+    })
+    
+    messages = [{"role": "system", "content": SYSTEM_PROMPT}]
+    messages.extend(sessions[session_id][-20:])
+    
     try:
-        result = collection.get(ids=[product_id], include=["documents", "metadatas"])
-        if not result["ids"]:
-            raise HTTPException(status_code=404, detail="Product not found")
+        response = openai_client.chat.completions.create(
+            model="gpt-4o-mini",
+            messages=messages,
+            tools=TOOLS_SCHEMA,
+            tool_choice="auto"
+        )
         
-        meta = result["metadatas"][0]
-        return {
-            "id": product_id,
-            "name": meta["name"],
-            "brand": meta["brand"],
-            "price": meta["price"],
-            "color": meta["color"],
-            "gender": meta["gender"],
-            "description": result["documents"][0]
-        }
+        assistant_message = response.choices[0].message
+        all_tool_results = []
+        
+        while assistant_message.tool_calls:
+            print(f"Tool calls: {[tc.function.name for tc in assistant_message.tool_calls]}")
+            for tool_call in assistant_message.tool_calls:
+                function_name = tool_call.function.name
+                arguments = json.loads(tool_call.function.arguments)
+                
+                result = execute_tool(function_name, arguments)
+                all_tool_results.append({
+                    "tool_call_id": tool_call.id,
+                    "tool": function_name,
+                    "result": result
+                })
+            
+            sessions[session_id].append({
+                "role": "assistant",
+                "content": assistant_message.content or "",
+                "tool_calls": [
+                    {
+                        "id": tc.id,
+                        "type": "function",
+                        "function": {
+                            "name": tc.function.name,
+                            "arguments": tc.function.arguments
+                        }
+                    } for tc in assistant_message.tool_calls
+                ]
+            })
+            
+            for tr in all_tool_results[-len(assistant_message.tool_calls):]:
+                sessions[session_id].append({
+                    "role": "tool",
+                    "tool_call_id": tr["tool_call_id"],
+                    "content": json.dumps(tr["result"])
+                })
+            
+            response = openai_client.chat.completions.create(
+                model="gpt-4o-mini",
+                messages=[{"role": "system", "content": SYSTEM_PROMPT}] + sessions[session_id][-20:],
+                tools=TOOLS_SCHEMA,
+                tool_choice="auto"
+            )
+            assistant_message = response.choices[0].message
+            print(f"After tool call - content: {assistant_message.content}, tool_calls: {assistant_message.tool_calls}")
+        
+        final_message = assistant_message.content
+        sessions[session_id].append({
+            "role": "assistant",
+            "content": final_message
+        })
+        
+        return {"response": final_message, "tool_results": all_tool_results}
+    
     except Exception as e:
-        raise HTTPException(status_code=404, detail="Product not found")
+        print(f"Error: {e}")
+        return {"response": "I'm having trouble processing your request. Please try again.", "tool_results": []}
 
 @app.get("/health")
 async def health():
-    return {"status": "ok", "products_loaded": collection.count()}
+    return {"status": "ok", "active_sessions": len(sessions)}
 
 if __name__ == "__main__":
     import uvicorn
