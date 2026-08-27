@@ -141,7 +141,11 @@ async def chat(request: ChatRequest) -> dict[str, Any]:
     session["history"].append({"role": "user", "content": request.text})
 
     messages = [{"role": "system", "content": SYSTEM_PROMPT}]
-    messages.extend(session["history"][-SESSION_HISTORY_LIMIT:])
+
+    history = session["history"][-SESSION_HISTORY_LIMIT:]
+    if history and history[0].get("role") == "tool":
+        history = history[1:]
+    messages.extend(history)
 
     try:
         response = openai_client.chat.completions.create(
