@@ -1,55 +1,85 @@
 import os
+import logging
+from typing import Any
+
 import razorpay
 from dotenv import load_dotenv
+
 from rag import search_catalog, get_product_by_id
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-razorpay_client = razorpay.Client(auth=(
-    os.getenv("RAZORPAY_KEY_ID"),
-    os.getenv("RAZORPAY_KEY_SECRET")
-))
+razorpay_client = razorpay.Client(
+    auth=(os.getenv("RAZORPAY_KEY_ID"), os.getenv("RAZORPAY_KEY_SECRET"))
+)
 
-def check_stock(product_id: str) -> dict:
-    """Check stock availability for a product."""
+
+def check_stock(product_id: str) -> dict[str, Any]:
+    """Check stock availability for a product.
+
+    Args:
+        product_id: The product ID to check.
+
+    Returns:
+        Dict with stock status or error.
+    """
     product = get_product_by_id(product_id)
     if not product:
+        logger.warning(f"Product not found: {product_id}")
         return {"error": "product_not_found"}
-    
-    return {
-        "product_id": product_id,
-        "in_stock": True,
-        "stock_count": 10
-    }
 
-def create_order(product_id: str, buyer_name: str, buyer_address: str) -> dict:
-    """Create a Razorpay order for the product."""
+    logger.info(f"Stock check for {product_id}: in_stock=True")
+    return {"product_id": product_id, "in_stock": True, "stock_count": 10}
+
+
+def create_order(
+    product_id: str, buyer_name: str, buyer_address: str
+) -> dict[str, Any]:
+    """Create a Razorpay order for the product.
+
+    Args:
+        product_id: The product ID to order.
+        buyer_name: Name of the buyer.
+        buyer_address: Delivery address.
+
+    Returns:
+        Dict with order details or error.
+    """
     product = get_product_by_id(product_id)
     if not product:
+        logger.warning(f"Product not found for order: {product_id}")
         return {"error": "product_not_found"}
-    
+
     stock = check_stock(product_id)
     if stock.get("error") or not stock.get("in_stock"):
+        logger.warning(f"Out of stock: {product_id}")
         return {"error": "out_of_stock"}
-    
+
     try:
-        order = razorpay_client.order.create({
-            "amount": product["price"] * 100,
-            "currency": "INR",
-            "receipt": f"receipt_{product_id}"
-        })
-        
+        order = razorpay_client.order.create(
+            {
+                "amount": product["price"] * 100,
+                "currency": "INR",
+                "receipt": f"receipt_{product_id}",
+            }
+        )
+
+        logger.info(f"Order created: {order['id']} for {product_id}")
         return {
             "order_id": order["id"],
             "amount": order["amount"],
             "currency": order["currency"],
-            "product": product
+            "product": product,
         }
     except Exception as e:
-        print(f"Razorpay error: {e}")
+        logger.error(f"Razorpay error: {e}")
         return {"error": "order_creation_failed"}
 
-TOOLS_SCHEMA = [
+
+TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
@@ -60,20 +90,20 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "query": {
                         "type": "string",
-                        "description": "Natural language search query (e.g., 'lightweight running shoes')"
+                        "description": "Natural language search query (e.g., 'lightweight running shoes')",
                     },
                     "max_price": {
                         "type": "integer",
-                        "description": "Maximum price filter in INR (optional)"
+                        "description": "Maximum price filter in INR (optional)",
                     },
                     "gender": {
                         "type": "string",
-                        "description": "Gender filter: 'Men', 'Women', or 'Unisex' (optional)"
-                    }
+                        "description": "Gender filter: 'Men', 'Women', or 'Unisex' (optional)",
+                    },
                 },
-                "required": ["query"]
-            }
-        }
+                "required": ["query"],
+            },
+        },
     },
     {
         "type": "function",
@@ -85,12 +115,12 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "product_id": {
                         "type": "string",
-                        "description": "The product ID to check"
+                        "description": "The product ID to check",
                     }
                 },
-                "required": ["product_id"]
-            }
-        }
+                "required": ["product_id"],
+            },
+        },
     },
     {
         "type": "function",
@@ -102,37 +132,52 @@ TOOLS_SCHEMA = [
                 "properties": {
                     "product_id": {
                         "type": "string",
-                        "description": "The product ID to order"
+                        "description": "The product ID to order",
                     },
                     "buyer_name": {
                         "type": "string",
-                        "description": "Name of the buyer"
+                        "description": "Name of the buyer",
                     },
                     "buyer_address": {
                         "type": "string",
-                        "description": "Delivery address"
-                    }
+                        "description": "Delivery address",
+                    },
                 },
-                "required": ["product_id", "buyer_name", "buyer_address"]
-            }
-        }
-    }
+                "required": ["product_id", "buyer_name", "buyer_address"],
+            },
+        },
+    },
 ]
 
-def execute_tool(tool_name: str, arguments: dict) -> dict:
-    """Execute a tool by name with given arguments."""
+
+def execute_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
+    """Execute a tool by name with given arguments.
+
+    Args:
+        tool_name: Name of the tool to execute.
+        arguments: Tool arguments.
+
+    Returns:
+        Tool execution result.
+    """
+    logger.info(f"Executing tool: {tool_name} with args: {arguments}")
+
     if tool_name == "search_catalog":
-        return {"products": search_catalog(
-            arguments["query"],
-            max_price=arguments.get("max_price"),
-            gender=arguments.get("gender")
-        )}
+        return {
+            "products": search_catalog(
+                arguments["query"],
+                max_price=arguments.get("max_price"),
+                gender=arguments.get("gender"),
+            )
+        }
     elif tool_name == "check_stock":
         return check_stock(arguments["product_id"])
     elif tool_name == "create_order":
         return create_order(
             arguments["product_id"],
             arguments["buyer_name"],
-            arguments["buyer_address"]
+            arguments["buyer_address"],
         )
+
+    logger.error(f"Unknown tool: {tool_name}")
     return {"error": "unknown_tool"}
