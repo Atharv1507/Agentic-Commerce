@@ -4,17 +4,157 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "message_seller",
-            "description": "Send a message to the seller agent to search products, check stock, or create orders.",
+            "name": "find_products",
+            "description": (
+                "Find products by negotiating with the seller agent on the shopper's "
+                "behalf. This runs up to 3 rounds internally: it briefs the seller, "
+                "verifies every returned product against the constraints you pass, "
+                "pushes back when results don't fit, and excludes anything already "
+                "shown to this shopper. It returns ONLY products that passed "
+                "verification. Break the shopper's request into explicit constraint "
+                "arguments — anything you leave out cannot be enforced."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "text": {
+                    "query": {
                         "type": "string",
-                        "description": "The message to send to the seller (e.g., 'Show me black running shoes under 10000')",
-                    }
+                        "description": "Product type and style only, e.g. 'analogue wrist watch' or 'floral summer dress'. Never include price, colour or brand here — they have their own arguments.",
+                    },
+                    "budget": {
+                        "type": "integer",
+                        "description": "The shopper's budget in INR. '10k' means 10000. Results are ranked towards this figure, so always set it when a budget is stated or known from preferences.",
+                    },
+                    "budget_min": {
+                        "type": "integer",
+                        "description": "Lower bound in INR. Use with budget_max when the shopper picked or stated a RANGE (e.g. '₹749 - ₹1,224'). Do not collapse a range into `budget` — that turns the floor into a ceiling.",
+                    },
+                    "budget_max": {
+                        "type": "integer",
+                        "description": "Upper bound in INR, paired with budget_min.",
+                    },
+                    "budget_flexible": {
+                        "type": "boolean",
+                        "description": "True when the shopper signalled they'd stretch for the right item ('flexible budget', 'happy to pay more'). Only then may results exceed the budget.",
+                    },
+                    "premium": {
+                        "type": "boolean",
+                        "description": "True when they asked for premium / high-end / 'something nicer'. Raises the price floor so budget items can't fill the results.",
+                    },
+                    "colors": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Requested colours, e.g. ['grey']. Matched by colour family.",
+                    },
+                    "materials": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fabrics the shopper asked for IN THIS REQUEST, e.g. ['linen'] for 'shirts, preferably linen'. Scoped to the product type currently being discussed — when they move to a different product type, drop it unless they say it again. Treated as a strong preference; the result tells you whether anything actually matched so you can be upfront when nothing does.",
+                    },
+                    "brands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Requested or referenced brands, e.g. ['CASIO'] for 'more like Casio'.",
+                    },
+                    "gender": {
+                        "type": "string",
+                        "description": "'Men', 'Women' or 'Unisex'. Only set this when the shopper is shopping for someone else — their own gender comes from their profile and is applied automatically.",
+                    },
+                    "min_results": {
+                        "type": "integer",
+                        "description": "How many acceptable options to aim for (default 3).",
+                    },
+                    "include_seen": {
+                        "type": "boolean",
+                        "description": "By default products already shown to this shopper are hidden so results are always new. Set true ONLY when they're deliberately referring back ('show me that CASIO again', 'what was the second one'), otherwise the search can dead-end.",
+                    },
+                    "purpose": {
+                        "type": "string",
+                        "enum": ["primary", "complement"],
+                        "description": "'primary' for what the shopper asked for. 'complement' for a cross-sell/upsell pass — these render in a separate 'Goes well with' row.",
+                    },
                 },
-                "required": ["text"],
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "ask_preferences",
+            "description": (
+                "Show the shopper a compact, fully skippable form to narrow a vague "
+                "request BEFORE searching. Options are filled in automatically from "
+                "what the catalogue actually stocks for this product type, so you do "
+                "not supply them. It also drops any facet already known from the "
+                "request or saved preferences. Use this once, for a genuinely broad "
+                "request like 'some shirts' or 'a dress'. Do NOT use it when the "
+                "shopper has already given you enough to search on, when they've "
+                "asked to just be shown something, or after a search has run — refine "
+                "conversationally instead. After calling it, stop and wait; do not "
+                "search in the same turn."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The garment type only, e.g. 'shirt' or 'dress'. Used to look up which options exist.",
+                    },
+                    "gender": {"type": "string", "description": "'Men', 'Women' or 'Unisex'"},
+                    "colors": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Colours already known — pass them so the form doesn't ask again.",
+                    },
+                    "brands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Brands already known.",
+                    },
+                    "materials": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Fabrics already known.",
+                    },
+                    "budget": {
+                        "type": "integer",
+                        "description": "Budget already known, so the form skips the price question.",
+                    },
+                },
+                "required": ["query"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_options",
+            "description": (
+                "Answer a question ABOUT the catalogue rather than searching it: "
+                "which brands / colours / fabrics are available for a product type, "
+                "and what the price range is. Use this whenever the shopper asks "
+                "'which brands do you have?', 'what colours are there?', 'what "
+                "fabrics?', 'how much do these cost?' — including when it's scoped "
+                "to a style ('for crew neck t-shirts'). It returns the real values "
+                "in stock, which you then STATE IN YOUR REPLY as a list. It shows no "
+                "product cards, so there is nothing duplicated by naming them. Do "
+                "not use find_products for this, and never guess or refuse — call "
+                "this and answer."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {
+                        "type": "string",
+                        "description": "The product type, plus a style word if the shopper scoped it, e.g. 'shirt', 't-shirt' or 'crew neck t-shirt'. No price, colour or brand.",
+                    },
+                    "gender": {
+                        "type": "string",
+                        "description": "'Men', 'Women' or 'Unisex'. Only when shopping for someone else — otherwise it comes from their profile.",
+                    },
+                },
+                "required": ["query"],
             },
         },
     },
@@ -43,45 +183,126 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
-            "name": "pay_order",
-            "description": "Create a Razorpay order and process payment for selected products.",
+            "name": "checkout_cart",
+            "description": (
+                "Check out the user's current cart. Reads cart contents and buyer "
+                "details from session automatically. Call this when the user "
+                "confirms they want to pay/checkout. If buyer email, phone, "
+                "address, or payment_method are missing, this will return an "
+                "error listing what's missing — use ask_user to collect it, then "
+                "call update_profile to save it, then call checkout_cart again."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {},
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_profile",
+            "description": (
+                "Save/update the user's account details (name, phone, address, "
+                "payment_method, email, gender) after collecting them "
+                "conversationally, e.g. during checkout when info is missing. These "
+                "are DETAILS, not preferences — they persist to the shopper's profile "
+                "and show up in their settings, so call this every time they give you "
+                "one rather than using it for this order only."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "product_ids": {
+                    "name": {"type": "string", "description": "User's full name"},
+                    "email": {"type": "string", "description": "User's email"},
+                    "phone": {"type": "string", "description": "User's phone number"},
+                    "address": {"type": "string", "description": "User's delivery address"},
+                    "payment_method": {"type": "string", "description": "User's preferred payment method"},
+                    "gender": {"type": "string", "description": "User's gender"},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "save_preferences",
+            "description": (
+                "Persist a LASTING taste that is true of the shopper, not of the item "
+                "they happen to be searching for right now: 'I always wear black', 'I'm "
+                "a Nike person', 'I shop premium', 'I never wear heels'. Saved "
+                "preferences apply as a soft default to future searches across every "
+                "conversation, so anything one-off must NOT be saved here.\n"
+                "Do NOT call this for the constraints of the current request — 'a black "
+                "linen shirt under 2k' is a search, not a preference; pass those to "
+                "find_products instead. Fabric is never a lasting preference and is "
+                "rejected. If unsure whether something is lasting, don't save it. "
+                "List values merge with what's already saved."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "colors": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "List of product IDs to order",
+                        "description": "Colours they gravitate to, e.g. ['grey']",
                     },
-                    "amount": {
-                        "type": "integer",
-                        "description": "Total amount in INR",
+                    "brands": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Brands they like or referenced approvingly, e.g. ['CASIO']",
                     },
-                    "buyer_name": {
+                    "categories": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Product categories they shop for, e.g. ['watches']",
+                    },
+                    "budget_level": {
                         "type": "string",
-                        "description": "Name of the buyer",
+                        "description": "Typical spend tier, e.g. 'premium', 'mid-range', 'around 10k for watches'",
                     },
-                    "buyer_email": {
+                    "style": {
                         "type": "string",
-                        "description": "Email of the buyer",
+                        "description": "Style leaning, e.g. 'minimal', 'classic', 'sporty'",
                     },
-                    "buyer_phone": {
-                        "type": "string",
-                        "description": "Phone number of the buyer",
-                    },
-                    "buyer_address": {
-                        "type": "string",
-                        "description": "Delivery address",
+                    "avoid": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "Things they've rejected as a rule, e.g. ['digital displays']",
                     },
                 },
-                "required": [
-                    "product_ids",
-                    "amount",
-                    "buyer_name",
-                    "buyer_email",
-                    "buyer_phone",
-                    "buyer_address",
-                ],
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "clear_preferences",
+            "description": (
+                "Forget saved preferences when the shopper takes one back ('actually I "
+                "don't only wear black', 'forget the Nike thing', 'clear my "
+                "preferences'). Omit `fields` to clear all of them. Use this rather "
+                "than working around a stale preference — a preference the shopper has "
+                "disowned must stop affecting results immediately.\n"
+                "You do NOT need this for a one-off 'no preference for this search': "
+                "saying that in chat already disables saved preferences for that search."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "fields": {
+                        "type": "array",
+                        "items": {
+                            "type": "string",
+                            "enum": ["colors", "brands", "categories", "budget_level", "style", "avoid"],
+                        },
+                        "description": "Which preference fields to forget. Omit to clear everything.",
+                    },
+                },
+                "required": [],
             },
         },
     },
@@ -95,8 +316,12 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                 "properties": {
                     "order_id": {
                         "type": "string",
-                        "description": "The Razorpay order ID to verify",
-                    }
+                        "description": "The Razorpay order ID to verify (starts with 'order_')",
+                    },
+                    "payment_id": {
+                        "type": "string",
+                        "description": "The Razorpay payment ID, if the user provided one (starts with 'pay_'). Pass this whenever available — it's checked in preference to order_id.",
+                    },
                 },
                 "required": ["order_id"],
             },
