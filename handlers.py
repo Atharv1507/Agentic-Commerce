@@ -5,7 +5,7 @@ from typing import Any
 import razorpay
 from dotenv import load_dotenv
 
-from rag import search_catalog, get_product_by_id
+from rag import search_catalog, get_product_by_id, price_range
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -111,13 +111,31 @@ def execute_tool(tool_name: str, arguments: dict[str, Any]) -> dict[str, Any]:
     logger.info(f"Executing tool: {tool_name}")
 
     if tool_name == "search_catalog":
+        products = search_catalog(
+            arguments["query"],
+            top_k=arguments.get("top_k") or 5,
+            max_price=arguments.get("max_price"),
+            min_price=arguments.get("min_price"),
+            target_price=arguments.get("target_price"),
+            gender=arguments.get("gender"),
+            colors=arguments.get("colors"),
+            materials=arguments.get("materials"),
+            brands=arguments.get("brands"),
+            exclude_ids=arguments.get("exclude_ids"),
+        )
+        # Echoing the constraints back lets the Personal Agent verify what was
+        # actually applied rather than trusting that its brief survived the
+        # trip through this agent's tool-call reasoning.
         return {
-            "products": search_catalog(
-                arguments["query"],
-                max_price=arguments.get("max_price"),
-                gender=arguments.get("gender"),
-            )
+            "products": products,
+            "applied_constraints": {
+                k: arguments.get(k)
+                for k in ("max_price", "min_price", "target_price", "gender", "colors", "materials", "brands")
+                if arguments.get(k)
+            },
         }
+    elif tool_name == "price_range":
+        return price_range(arguments["query"], gender=arguments.get("gender"))
     elif tool_name == "check_stock":
         return check_stock(arguments["product_id"])
     elif tool_name == "create_order":
