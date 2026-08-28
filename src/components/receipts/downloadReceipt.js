@@ -1,4 +1,5 @@
 import { orderNumber, formatOrderDate } from "./receiptUtils";
+import { DEFAULT_ASSISTANT_NAME } from "@/lib/utils";
 
 // A plain-text receipt, generated client-side from data already on hand — no
 // backend PDF generation for what is, functionally, an itemised confirmation
@@ -13,7 +14,7 @@ export function downloadReceipt(order, assistantName) {
   });
 
   const text = [
-    `${assistantName || "Shopper Agent"} — Order Receipt`,
+    `${assistantName || DEFAULT_ASSISTANT_NAME} — Order Receipt`,
     "=".repeat(40),
     `Order #${orderNumber(order.order_id)}`,
     `Date: ${formatOrderDate(order)}`,

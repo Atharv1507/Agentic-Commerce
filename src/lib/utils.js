@@ -1,23 +1,13 @@
 import { clsx } from "clsx";
 import { twMerge } from "tailwind-merge";
+import drapeAvatar from "@/assets/drape-avatar.png";
 
 export function cn(...inputs) {
   return twMerge(clsx(inputs));
 }
 
-export const DEFAULT_ASSISTANT_NAME = "Shopper Agent";
-
-// Two-letter initials to match the avatar circle's original "SA" sizing —
-// one word from a custom name (e.g. "Nova") takes its first two letters,
-// multiple words (e.g. "Shopper Agent") take one letter from each.
-export function getAssistantInitials(name) {
-  const trimmed = (name || DEFAULT_ASSISTANT_NAME).trim();
-  const words = trimmed.split(/\s+/).filter(Boolean);
-  if (words.length >= 2) {
-    return (words[0][0] + words[1][0]).toUpperCase();
-  }
-  return trimmed.slice(0, 2).toUpperCase();
-}
+export const DEFAULT_ASSISTANT_NAME = "Drape Ai";
+export const DEFAULT_ASSISTANT_AVATAR = drapeAvatar;
 
 // The catalogue's size rail, smallest first. Fixed rather than derived from a
 // product so every rail lines up: a garment that skips XS shows a gap at XS
