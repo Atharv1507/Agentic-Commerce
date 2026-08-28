@@ -86,16 +86,42 @@ def load_sessions() -> dict[str, Any]:
     return loaded
 
 
-def save_sessions(sessions: dict[str, Any]) -> None:
-    """Write the session store atomically.
+# Guards the tmp-write-then-rename below: save_sessions now returns before the
+# disk write finishes (see the docstring), so two turns landing close together
+# — a chat reply and, say, a concurrent Settings save — could otherwise run
+# the file swap at the same moment.
+_sessions_write_lock = threading.Lock()
 
-    Serialised in full BEFORE the destination is touched, then swapped in with
-    a single rename. Writing directly into `sessions.json` truncates it the
-    instant it's opened, so anything that goes wrong between there and the
-    final flush — a crash, a kill, an encoding error partway through — leaves
-    an empty or half-written store with the previous contents already gone.
-    `os.replace` is atomic on POSIX, so a reader sees either the old file or
-    the new one, never a partial one.
+
+def _write_sessions_file(serialised: str) -> None:
+    """Do the actual fsync-and-rename. Runs off the request thread."""
+    tmp = SESSIONS_FILE.with_suffix(f".tmp-{uuid.uuid4().hex}")
+    try:
+        with _sessions_write_lock:
+            with open(tmp, "w") as f:
+                f.write(serialised)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp, SESSIONS_FILE)
+    except OSError as e:
+        logger.error(f"Could not save sessions: {e}")
+        tmp.unlink(missing_ok=True)
+
+
+def save_sessions(sessions: dict[str, Any]) -> None:
+    """Write the session store atomically, without the caller waiting on disk.
+
+    Serialised to a string on the calling thread — `json.dumps` is fast and
+    the request handler isn't racing anyone else for `sessions` at that
+    instant — but the actual write, fsync and rename are handed to a
+    background thread. A chat reply used to sit behind a blocking fsync on
+    every single turn for a durability guarantee the shopper never asked for;
+    a crash in the handful of milliseconds before the write lands loses at
+    most the last turn, which `load_sessions` already tolerates by design.
+
+    Written to a temp file first and swapped in with `os.replace`, which is
+    atomic on POSIX, so a reader sees either the old file or the new one,
+    never a partial one.
     """
     try:
         serialised = json.dumps(sessions, indent=2)
@@ -104,16 +130,7 @@ def save_sessions(sessions: dict[str, Any]) -> None:
         logger.error(f"Sessions are not serialisable ({e}); keeping the previous file")
         return
 
-    tmp = SESSIONS_FILE.with_suffix(f".tmp-{os.getpid()}")
-    try:
-        with open(tmp, "w") as f:
-            f.write(serialised)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp, SESSIONS_FILE)
-    except OSError as e:
-        logger.error(f"Could not save sessions: {e}")
-        tmp.unlink(missing_ok=True)
+    threading.Thread(target=_write_sessions_file, args=(serialised,), daemon=True).start()
 
 
 sessions = load_sessions()
