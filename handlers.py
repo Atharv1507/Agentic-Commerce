@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from typing import Any, Callable, Optional
 
 import razorpay
@@ -648,9 +649,37 @@ def checkout_cart(session: dict[str, Any], confirm_over_limit: bool = False) -> 
         )
 
         logger.info(f"Order created: {order['id']} for products: {product_ids}")
+
+        lines = [
+            {
+                "id": item["id"],
+                "name": item.get("name"),
+                "brand": item.get("brand"),
+                "size": normalize_size(item.get("size")) or default_size,
+                "quantity": item.get("quantity", 1),
+                "price": item.get("price"),
+            }
+            for item in cart
+        ]
+        buyer = {
+            "name": user.get("name", ""),
+            "email": user.get("email", ""),
+            "phone": user.get("phone", ""),
+            "address": user.get("address", ""),
+        }
         # Tracked so verify_payment can tell a first confirmation from a repeat
-        # one and never re-process an order already marked paid.
-        session.setdefault("orders", {})[order["id"]] = {"status": "created"}
+        # one and never re-process an order already marked paid, and so the
+        # receipts page has a real record to render without a second lookup —
+        # a card would otherwise have nothing to show until this order is
+        # separately re-fetched from Razorpay.
+        session.setdefault("orders", {})[order["id"]] = {
+            "status": "created",
+            "amount_inr": amount,
+            "currency": order["currency"],
+            "lines": lines,
+            "buyer": buyer,
+            "created_at": time.time(),
+        }
         session["cart"] = []
 
         return {
@@ -669,21 +698,8 @@ def checkout_cart(session: dict[str, Any], confirm_over_limit: bool = False) -> 
             ),
             "currency": order["currency"],
             "product_ids": product_ids,
-            "lines": [
-                {
-                    "id": item["id"],
-                    "name": item.get("name"),
-                    "size": normalize_size(item.get("size")) or default_size,
-                    "quantity": item.get("quantity", 1),
-                }
-                for item in cart
-            ],
-            "buyer": {
-                "name": user.get("name", ""),
-                "email": user.get("email", ""),
-                "phone": user.get("phone", ""),
-                "address": user.get("address", ""),
-            },
+            "lines": lines,
+            "buyer": buyer,
             "status": "created",
             "message": "Order created. Complete payment in the checkout modal.",
         }
@@ -874,7 +890,16 @@ def verify_payment(
         return {"error": "verification_failed"}
 
     if result.get("status") in ("captured", "paid"):
-        orders[order_id] = {"status": "paid", "result": result}
+        # Merged onto the existing record rather than replacing it — checkout_cart
+        # already stored the line items and buyer details a receipt needs, and
+        # overwriting the record here would blank a receipt back to just a status.
+        orders[order_id] = {
+            **orders.get(order_id, {}),
+            "status": "paid",
+            "payment_id": result.get("payment_id"),
+            "paid_at": time.time(),
+            "result": result,
+        }
     else:
         orders.setdefault(order_id, {"status": "created"})
     return result

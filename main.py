@@ -637,6 +637,25 @@ async def delete_preferences(email: str) -> dict[str, Any]:
     return {"status": "ok", "preferences": {}}
 
 
+@app.get("/session/{email}/orders")
+async def get_orders(email: str) -> dict[str, Any]:
+    """Return this account's order history — the data source for the receipts page.
+
+    Args:
+        email: User's email address.
+
+    Returns:
+        Dict with `orders`, newest first. Each entry is whatever checkout_cart
+        and verify_payment recorded: status, amount, currency, line items,
+        buyer snapshot, and timestamps.
+    """
+    session = _require_session(email.lower())
+    orders = session.get("orders", {})
+    records = [{"order_id": order_id, **record} for order_id, record in orders.items()]
+    records.sort(key=lambda r: r.get("created_at") or 0, reverse=True)
+    return {"status": "ok", "orders": records}
+
+
 @app.get("/session/{email}/logs")
 async def get_logs(email: str, limit: int = 50) -> dict[str, Any]:
     """Return this account's audit trail — every tool call the agent made.
