@@ -195,3 +195,38 @@ def canonical_color(value: str) -> Optional[str]:
         if token in _TOKEN_TO_COLOR:
             return _TOKEN_TO_COLOR[token]
     return None
+
+
+# The size rail, smallest first. Mirrors generate_catalog.SIZES; kept here too
+# because everything downstream of the catalogue file needs the canonical order
+# and must not import the build script to get it.
+SIZES = ("XS", "S", "M", "L", "XL", "XXL")
+
+# Every way a shopper or another agent might name a size. "Large" and "l" and
+# "size L" all have to land on the same key as the catalogue's, or a perfectly
+# stocked product looks out of stock.
+_SIZE_ALIASES = {
+    "xs": "XS", "extrasmall": "XS", "extra small": "XS", "xsmall": "XS",
+    "s": "S", "small": "S",
+    "m": "M", "medium": "M", "med": "M",
+    "l": "L", "large": "L", "lrg": "L",
+    "xl": "XL", "extralarge": "XL", "extra large": "XL", "xlarge": "XL",
+    "xxl": "XXL", "2xl": "XXL", "double xl": "XXL", "doublexl": "XXL",
+    "xxlarge": "XXL", "extra extra large": "XXL",
+}
+
+
+def canonical_size(value: Optional[str]) -> Optional[str]:
+    """Map any spelling of a size onto the catalogue's key, or None.
+
+    None means "not a size I recognise" — the callers treat that as no size
+    filter at all, which shows the shopper everything rather than silently
+    filtering on a guess.
+    """
+    if not value:
+        return None
+    cleaned = str(value).strip().lower().replace("-", " ")
+    cleaned = re.sub(r"\bsizes?\b", "", cleaned).strip()
+    if cleaned in _SIZE_ALIASES:
+        return _SIZE_ALIASES[cleaned]
+    return _SIZE_ALIASES.get(cleaned.replace(" ", ""))

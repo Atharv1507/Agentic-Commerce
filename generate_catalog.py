@@ -18,6 +18,7 @@ of a build):
   * real fabric coverage, linen included, so "preferably linen" has a true answer
   * four populated price bands, so budget / premium / range asks all resolve
   * enough brands that no single one can fill a result page
+  * per-size stock on every product, with real gaps — see SIZE_CURVE
 
 Usage:
     python generate_catalog.py                 # writes catalog.json
@@ -25,8 +26,8 @@ Usage:
     python generate_catalog.py --count 500     # a bigger shelf
 
 Fields match exactly what `rag.load_catalog` reads — id, name, brand, gender,
-price, description, color, tags, image — and nothing else. A field the system
-doesn't read is dead weight in the source of truth.
+price, description, color, tags, image, sizes — and nothing else. A field the
+system doesn't read is dead weight in the source of truth.
 """
 
 import argparse
@@ -187,6 +188,55 @@ BASE_PRICE = {
 BRAND_TIER_MULTIPLIER = {0: 0.85, 1: 1.15, 2: 1.75}
 
 GENDER_SPLIT = [("Men", 0.40), ("Women", 0.40), ("Unisex", 0.20)]
+
+# Size ladder, smallest first. Order matters: it is the order every size map is
+# written in, so a product's stock reads like a size rail rather than a hash.
+SIZES = ("XS", "S", "M", "L", "XL", "XXL")
+
+# Probability that a given product is stocked in a given size at all. The curve
+# is the point of the whole feature: a shop where every product exists in every
+# size can never answer "sorry, not in your size", which is the single most
+# common real interaction in clothing retail. Middle sizes are nearly always
+# there, the ends often aren't — so roughly a fifth of the catalogue has no L,
+# and the dead-end path is reachable without being the common case.
+SIZE_CURVE = {"XS": 0.42, "S": 0.72, "M": 0.88, "L": 0.80, "XL": 0.62, "XXL": 0.40}
+
+
+def _size_stock(rng: random.Random) -> dict[str, int]:
+    """Per-size unit counts for one product, zeros included.
+
+    Sizes that are out are written as an explicit 0 rather than omitted: the
+    difference between "we don't carry XXL" and "we're sold out of XXL" is one
+    a shopper cares about, and only a present-but-zero key can say the latter.
+    """
+    depth = rng.choice((2, 3, 4, 5, 6, 7, 8, 10, 12))
+    stock = {}
+    for size in SIZES:
+        if rng.random() < SIZE_CURVE[size]:
+            stock[size] = max(1, int(round(rng.triangular(1, depth, depth * 0.55))))
+        else:
+            stock[size] = 0
+
+    # A product with nothing in any size is unsellable — it would sit in the
+    # index taking up result slots it can never convert.
+    if not any(stock.values()):
+        stock[rng.choice(("S", "M", "L"))] = rng.randint(1, 4)
+
+    return stock
+
+
+def assign_stock(products: list[dict[str, Any]], seed: int) -> None:
+    """Attach per-size stock to an already-built catalogue, in place.
+
+    Deliberately a second pass over the finished list rather than a step inside
+    `generate`: drawing from the main RNG mid-loop would shift every subsequent
+    draw, so adding sizes would have silently rewritten all 300 products'
+    names, colours and prices. A separate stream keeps the existing catalogue
+    byte-identical.
+    """
+    rng = random.Random(seed ^ 0x5123E5)
+    for product in products:
+        product["sizes"] = _size_stock(rng)
 TYPE_SPLIT = [("shirt", 0.535), ("tshirt", 0.465)]
 
 
@@ -323,6 +373,8 @@ def generate(count: int, seed: int) -> list[dict[str, Any]]:
                 "color": color_name,
                 "tags": tags,
                 "image": _swatch(color_name, hex_code, f"{fabric} · {gender}"),
+                # Filled by assign_stock() after the loop — see its docstring.
+                "sizes": {},
             }
         )
 
@@ -342,6 +394,9 @@ def audit(products: list[dict[str, Any]]) -> dict[str, Any]:
     genders: Counter = Counter()
     brands: Counter = Counter()
     bands: Counter = Counter()
+    size_coverage: Counter = Counter()
+    partial_sizes = 0
+    dead_products = 0
     untyped: list[str] = []
     no_color: list[str] = []
 
@@ -370,6 +425,15 @@ def audit(products: list[dict[str, Any]]) -> dict[str, Any]:
         genders[product["gender"]] += 1
         brands[product["brand"]] += 1
 
+        sizes = product.get("sizes") or {}
+        for size, qty in sizes.items():
+            if qty > 0:
+                size_coverage[size] += 1
+        if not any(sizes.values()):
+            dead_products += 1
+        elif any(qty == 0 for qty in sizes.values()):
+            partial_sizes += 1
+
         price = product["price"]
         band = (
             "value <₹900" if price < 900
@@ -386,6 +450,9 @@ def audit(products: list[dict[str, Any]]) -> dict[str, Any]:
         "colour_families": dict(families.most_common()),
         "fabrics": dict(fabrics.most_common()),
         "price_bands": dict(bands.most_common()),
+        "size_coverage": {s: size_coverage.get(s, 0) for s in SIZES},
+        "partial_sizes": partial_sizes,
+        "dead_products": dead_products,
         "brands": len(brands),
         "brand_max_share": brands.most_common(1)[0] if brands else None,
         "untyped": untyped,
@@ -395,8 +462,12 @@ def audit(products: list[dict[str, Any]]) -> dict[str, Any]:
 
 
 def report(summary: dict[str, Any]) -> None:
-    for key in ("total", "kinds", "genders", "price_bands", "colour_families", "fabrics"):
+    for key in ("total", "kinds", "genders", "price_bands", "colour_families", "fabrics", "size_coverage"):
         logger.info(f"{key}: {summary[key]}")
+    logger.info(
+        f"products with at least one size out: {summary['partial_sizes']} "
+        f"({summary['partial_sizes'] * 100 // max(1, summary['total'])}%)"
+    )
     logger.info(f"brands: {summary['brands']} (largest: {summary['brand_max_share']})")
     if summary["untyped"]:
         logger.info(f"⚠ products with no recognised type: {summary['untyped'][:5]}")
@@ -442,6 +513,20 @@ def verify(summary: dict[str, Any]) -> list[str]:
         if n < 25:
             problems.append(f"price band '{band}' has only {n} products")
 
+    if summary["dead_products"]:
+        problems.append(f"{summary['dead_products']} product(s) have no stock in any size")
+    floor = summary["total"] // 4
+    thin_sizes = {s: n for s, n in summary["size_coverage"].items() if n < floor}
+    if thin_sizes:
+        problems.append(f"sizes too thinly stocked to shop in (need {floor}+): {thin_sizes}")
+    # Without real gaps the "not available in your size" path is unreachable,
+    # which is the whole reason per-size stock exists.
+    if summary["partial_sizes"] < summary["total"] // 5:
+        problems.append(
+            f"only {summary['partial_sizes']} product(s) have a size out of stock — "
+            f"the out-of-size path would never trigger"
+        )
+
     if summary["brands"] < 12:
         problems.append(f"only {summary['brands']} brands")
     if summary["brand_max_share"] and summary["brand_max_share"][1] > len(str(summary["total"])) * 20:
@@ -459,6 +544,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     args = parser.parse_args(argv)
 
     products = generate(args.count, args.seed)
+    assign_stock(products, args.seed)
     summary = audit(products)
     report(summary)
 

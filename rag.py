@@ -8,8 +8,10 @@ import chromadb
 from vocab import (
     GARMENT_TOKENS,
     MATERIAL_TOKENS,
+    SIZES,
     _ADJACENCY,
     canonical_color,
+    canonical_size,
     style_families,
     tokenize,
 )
@@ -44,6 +46,35 @@ _product_styles: dict[str, set[str]] = {}
 
 
 
+def _normalize_size_map(raw: Any) -> dict[str, int]:
+    """Coerce a product's size map onto the canonical rail, in ladder order.
+
+    Missing sizes become an explicit 0. A product that records no sizes at all
+    is treated as stocked in every size — that keeps a hand-written or legacy
+    catalogue entry sellable instead of silently vanishing from every search
+    the moment size filtering is switched on.
+    """
+    if not raw:
+        return {size: 1 for size in SIZES}
+
+    counts: dict[str, int] = {size: 0 for size in SIZES}
+    for key, value in raw.items():
+        canonical = canonical_size(key)
+        if not canonical:
+            continue
+        try:
+            counts[canonical] = max(0, int(value))
+        except (TypeError, ValueError):
+            continue
+    return counts
+
+
+def available_sizes(product: dict[str, Any]) -> list[str]:
+    """Which sizes of this product can actually be bought right now."""
+    sizes = product.get("sizes") or {}
+    return [size for size in SIZES if sizes.get(size, 0) > 0]
+
+
 def load_catalog() -> int:
     """Load products from catalog.json into ChromaDB and the in-memory index.
 
@@ -70,6 +101,11 @@ def load_catalog() -> int:
             ]
         )
         documents.append(searchable)
+
+        # Normalised once here rather than at every read: a catalogue built by
+        # hand can spell sizes any way it likes, and every downstream check
+        # ("do you have this in large?") compares against the canonical key.
+        p["sizes"] = _normalize_size_map(p.get("sizes"))
 
         _catalog[p["id"]] = p
         tokens = tokenize(searchable)
@@ -170,12 +206,13 @@ def search_catalog(
     colors: Optional[list[str]] = None,
     materials: Optional[list[str]] = None,
     brands: Optional[list[str]] = None,
+    size: Optional[str] = None,
     exclude_ids: Optional[list[str]] = None,
     require_keyword_match: bool = True,
 ) -> list[dict]:
     """Search the catalogue with hybrid semantic + lexical + constraint ranking.
 
-    Price, gender, exclusions, product kind and product purpose are hard
+    Price, gender, size, exclusions, product kind and product purpose are hard
     filters; semantics, keywords, budget fit, colour and brand are blended into
     a score that decides ordering. Purpose is a filter, not a preference: a
     formal shoe is not a cheap running shoe, so name the use in `query`
@@ -192,6 +229,10 @@ def search_catalog(
         gender: Gender filter (Men, Women, Unisex). Unisex always passes.
         colors: Preferred colours, matched by colour family.
         brands: Preferred brands, matched loosely.
+        size: Hard filter — only products with stock in this size come back.
+            A shopper who wears L has no use for a shirt that only exists in S,
+            so this is a filter rather than a ranking signal. An unrecognised
+            value is ignored rather than guessed at.
         exclude_ids: Product IDs to leave out — already shown to this shopper.
         require_keyword_match: Drop products that share no content word with the
             query. Nearest-neighbour search always returns *something*, so
@@ -206,6 +247,7 @@ def search_catalog(
         colors = [c for c in (colors or []) if c]
         materials = [m for m in (materials or []) if m]
         brands = [b for b in (brands or []) if b]
+        wanted_size = canonical_size(size)
         excluded = set(exclude_ids or [])
 
         # The catalogue is small enough to rank end to end, which beats
@@ -269,6 +311,8 @@ def search_catalog(
                 continue
             if not _gender_ok(product["gender"], gender):
                 continue
+            if wanted_size and product["sizes"].get(wanted_size, 0) <= 0:
+                continue
 
             product_tokens = _product_tokens.get(pid, set())
 
@@ -327,6 +371,11 @@ def search_catalog(
                     "gender": product["gender"],
                     "description": product["description"],
                     "image": product["image"],
+                    # Both the map and the derived list travel with the product:
+                    # the caller needs the counts to say "only 2 left in M" and
+                    # the list to check a size without re-deriving it.
+                    "sizes": dict(product["sizes"]),
+                    "available_sizes": available_sizes(product),
                     "relevance": round(score, 4),
                     # Lets the caller say "none of these are actually linen"
                     # instead of quietly presenting cotton as a match.
@@ -338,7 +387,8 @@ def search_catalog(
 
         logger.info(
             f"Query '{query}' (budget={target_price or max_price}, colors={colors}, "
-            f"brands={brands}, excluded={len(excluded)}) returned {len(products)} products"
+            f"brands={brands}, size={wanted_size}, excluded={len(excluded)}) "
+            f"returned {len(products)} products"
         )
         return products
 
@@ -369,6 +419,8 @@ def get_product_by_id(product_id: str) -> Optional[dict]:
         "gender": product["gender"],
         "description": product["description"],
         "image": product["image"],
+        "sizes": dict(product["sizes"]),
+        "available_sizes": available_sizes(product),
     }
 
 
@@ -414,6 +466,8 @@ def catalog_facets(
         materials.extend(sorted(_product_tokens.get(product["id"], set()) & MATERIAL_TOKENS))
     materials = ranked(materials)
 
+    stocked_sizes = [size for size in SIZES if any(size in p["available_sizes"] for p in matches)]
+
     prices = sorted(p["price"] for p in matches)
     # Terciles, so the bands describe this category's real spread instead of
     # some fixed ladder that might sit entirely above or below it.
@@ -439,6 +493,7 @@ def catalog_facets(
         facets["colors"] = colors
         facets["brands"] = brands
         facets["materials"] = materials
+        facets["sizes"] = stocked_sizes
         facets["price_bands"] = bands
         return facets
 
@@ -451,6 +506,10 @@ def catalog_facets(
         facets["materials"] = materials[:5]
     if len(bands) > 1:
         facets["price_bands"] = bands
+    # Not offered as a question — size comes from the shopper's profile, not
+    # from a form — but reported so the caller can say what the rail holds.
+    if stocked_sizes:
+        facets["sizes"] = stocked_sizes
 
     return facets
 

@@ -49,6 +49,10 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                         "items": {"type": "string"},
                         "description": "Preferred brands, e.g. ['CASIO']. Use this for 'something like <brand>' asks.",
                     },
+                    "size": {
+                        "type": "string",
+                        "description": "The buyer's size: XS, S, M, L, XL or XXL. A HARD filter — only products with stock in that size come back. Always pass it when the brief states one; a garment the buyer cannot wear is not a result.",
+                    },
                     "exclude_ids": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -93,14 +97,23 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "check_stock",
-            "description": "Check if a product is in stock. Use before creating an order.",
+            "description": (
+                "Check per-size availability for one product. Use before creating an "
+                "order, and whenever the buyer asks about a specific size. Returns the "
+                "unit count for every size, so answer from those numbers rather than "
+                "assuming a product exists in the size that was asked about."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
                     "product_id": {
                         "type": "string",
                         "description": "The product ID to check",
-                    }
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "The size being asked about (XS, S, M, L, XL, XXL). Pass it whenever the buyer named one — the answer then refers to that size specifically instead of the product in general.",
+                    },
                 },
                 "required": ["product_id"],
             },
@@ -110,7 +123,11 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
         "type": "function",
         "function": {
             "name": "create_order",
-            "description": "Create a Razorpay order for one or more products.",
+            "description": (
+                "Create a Razorpay order for one or more products. Re-validates size "
+                "stock at order time and refuses the order if any line cannot ship in "
+                "the requested size."
+            ),
             "parameters": {
                 "type": "object",
                 "properties": {
@@ -134,6 +151,15 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                     "buyer_phone": {
                         "type": "string",
                         "description": "Phone number of the buyer",
+                    },
+                    "sizes": {
+                        "type": "object",
+                        "description": "Size per product, keyed by product ID, e.g. {\"prod_0007\": \"L\"}. Use when the buyer named different sizes for different items.",
+                        "additionalProperties": {"type": "string"},
+                    },
+                    "buyer_size": {
+                        "type": "string",
+                        "description": "The buyer's usual size, applied to any product not listed in `sizes`.",
                     },
                 },
                 "required": ["product_ids", "buyer_name", "buyer_address", "buyer_email", "buyer_phone"],

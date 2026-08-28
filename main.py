@@ -16,7 +16,7 @@ from config import (
     MAX_TOOL_ITERATIONS,
 )
 from schemas import TOOLS_SCHEMA
-from handlers import execute_tool
+from handlers import check_stock, execute_tool
 from rag import catalog_facets
 
 logging.basicConfig(level=logging.INFO)
@@ -214,6 +214,39 @@ async def facets(request: FacetsRequest) -> dict[str, Any]:
         "what do you stock?" question rather than populating a form.
     """
     return catalog_facets(request.query, gender=request.gender, full=request.full)
+
+
+class StockRequest(BaseModel):
+    """Request model for /stock endpoint."""
+
+    product_ids: list[str]
+    size: Optional[str] = None
+
+
+@app.post("/stock")
+async def stock(request: StockRequest) -> dict[str, Any]:
+    """Per-size availability for a set of products, without an LLM in the way.
+
+    The buyer's agent calls this at checkout to confirm every line can still
+    ship in the shopper's size. That check has to be exact and fast, and an
+    LLM round trip is neither — a model that paraphrases "0 in L" as "in
+    stock" would let the shop take money for a garment it cannot send.
+
+    Args:
+        request: StockRequest with the product IDs and the size to check.
+
+    Returns:
+        Dict keyed by product ID, plus `unavailable` listing the IDs that
+        cannot ship in that size.
+    """
+    results = {pid: check_stock(pid, request.size) for pid in request.product_ids}
+    return {
+        "size": request.size,
+        "products": results,
+        "unavailable": [
+            pid for pid, r in results.items() if r.get("error") or not r.get("in_stock")
+        ],
+    }
 
 
 @app.get("/health")
