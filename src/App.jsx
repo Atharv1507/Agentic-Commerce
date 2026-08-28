@@ -12,6 +12,7 @@ import CartModal from "@/components/cart/CartModal";
 import SettingsModal from "@/components/settings/SettingsModal";
 import ActivityLogPanel from "@/components/activity/ActivityLogPanel";
 import SpendLimitDialog from "@/components/checkout/SpendLimitDialog";
+import ReceiptsPage from "@/components/receipts/ReceiptsPage";
 import { useState } from "react";
 
 function App() {
@@ -33,6 +34,7 @@ function App() {
   const [cartOpen, setCartOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
+  const [receiptsOpen, setReceiptsOpen] = useState(false);
 
   const enterChatWithThread = (id) => {
     switchThread(id);
@@ -78,6 +80,7 @@ function App() {
               onGoHome={goHome}
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenActivityLog={() => setActivityOpen(true)}
+              onOpenReceipts={() => setReceiptsOpen(true)}
               onAddToCart={chat.addToCart}
               userSize={session?.size}
             />
@@ -136,6 +139,12 @@ function App() {
               onConfirm={chat.confirmSpendLimitOverride}
               onCancel={chat.dismissSpendLimitBlock}
             />
+
+            <AnimatePresence>
+              {receiptsOpen && (
+                <ReceiptsPage key="receipts" session={session} onClose={() => setReceiptsOpen(false)} />
+              )}
+            </AnimatePresence>
           </motion.div>
         )}
       </AnimatePresence>

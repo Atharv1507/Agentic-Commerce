@@ -8,6 +8,7 @@ import {
   MessageCircle,
   Settings,
   History,
+  Receipt,
   Plus,
   Check,
   Trash2,
@@ -93,6 +94,7 @@ export default function ChatSidebar({
   onGoHome,
   onOpenSettings,
   onOpenActivityLog,
+  onOpenReceipts,
   onAddToCart,
   userSize,
 }) {
@@ -139,6 +141,16 @@ export default function ChatSidebar({
         >
           <SquarePen className="size-4 shrink-0" />
           {!collapsed && "New chat"}
+        </button>
+        <button
+          onClick={onOpenReceipts}
+          className={cn(
+            "flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+            collapsed && "w-auto justify-center px-2.5"
+          )}
+        >
+          <Receipt className="size-4 shrink-0" />
+          {!collapsed && "Your orders"}
         </button>
       </div>
 
