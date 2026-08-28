@@ -37,8 +37,14 @@ widget directly for the payment step itself.
    opens Razorpay's modal client-side with that order's id/amount. On
    success, the payment id + order id are sent back to the agent as a chat
    message, which triggers `verify_payment` on the Personal Agent and a
-   receipt.
-5. Cart edits (add/remove/resize) can happen two ways: the shopper clicking a
+   receipt. The order itself is created by the merchant, not the Personal
+   Agent — the amount in the modal is the merchant's price, campaign discount
+   already applied.
+5. Merchant offers arrive as an `offers` array on a chat response and render as
+   their own "Offer from the shop" message, above any cross-sell. The wording
+   is the merchant's own and is shown verbatim — the saving is the shop's
+   promise, not the assistant's to restate.
+6. Cart edits (add/remove/resize) can happen two ways: the shopper clicking a
    product card (straight `POST/PATCH/DELETE /cart/...` calls, instant, no
    LLM involved) or the agent doing it mid-conversation (comes back as a
    `cart` field on the chat response) — `useChat` reconciles whichever
@@ -51,10 +57,35 @@ This app exposes none — it's a static SPA. It only calls out to:
 | Service | What for |
 |---|---|
 | Personal Agent (`VITE_API_BASE_URL`, default `http://localhost:8000`) | Every `/onboarding`, `/session/*`, `/cart/*`, `/chat`, `/chat/stream` call |
-| Razorpay Checkout.js | The payment modal itself, using the order the Personal Agent already created |
+| Razorpay Checkout.js | The payment modal itself, using the order the merchant already created |
+| Seller Agent (`VITE_SELLER_BASE_URL`, default `http://localhost:8001`) | **Only** `GET /merchant/analytics`, for the developer-only merchant dashboard |
 
-It never talks to the Seller Agent — that service isn't reachable from the
-browser's perspective at all in this architecture.
+No shopping traffic touches the Seller Agent — the merchant dashboard is the
+single exception, and it's a developer affordance rather than a shopper
+feature (see below).
+
+## Merchant dashboard (developer only)
+
+The chart icon at the bottom of the sidebar opens `MerchantDashboard`, a
+full-screen view of the *merchant's* books: revenue, AOV, **revenue attributed
+per buyer agent**, cross-sell attach rate, campaign impact and top products. A
+real shopper would never see this; it exists to make the growth side of the
+system visible in a demo.
+
+It reads the Seller Agent directly, because those numbers belong to the shop —
+deriving them from this shopper's own session would only ever show revenue that
+this one buyer agent brought in, which is precisely the blind spot the merchant
+needs to see past.
+
+`VITE_MERCHANT_KEY` ships in the client bundle and is therefore **not secret**.
+That's tolerable here only because the endpoint it opens is read-only and this
+is an explicitly developer-facing button. The production shape would be a
+merchant-authenticated session behind a backend of its own.
+
+Charts are hand-rolled CSS bars rather than a charting library: the app has no
+chart dependency, one bar per row is all this needs, and a library would bring
+its own type scale and colour defaults to fight with the theme — the same
+reasoning behind `TrackOrderView`'s hand-built timeline.
 
 ## Communication flow
 
