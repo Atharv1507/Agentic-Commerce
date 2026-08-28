@@ -199,7 +199,7 @@ export default function OnboardingScreen({ onComplete, onSkip }) {
                 <motion.div
                   className="h-full rounded-full"
                   style={{
-                    background: answered ? "var(--color-primary)" : "var(--color-primary)",
+                    background: "var(--color-mustard)",
                     opacity: answered ? 1 : 0.45,
                   }}
                   initial={{ width: 0 }}
@@ -251,7 +251,7 @@ export default function OnboardingScreen({ onComplete, onSkip }) {
                           step.layout === "grid"
                             ? "px-2 py-4 text-center text-lg font-medium"
                             : "w-full px-6 py-4 text-left text-lg",
-                          "border-border hover:border-primary",
+                          "border-border hover:border-mustard",
                           values[step.id] === option ? "border-primary bg-primary/10" : "bg-card"
                         )}
                         whileHover={{ scale: 1.01 }}

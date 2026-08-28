@@ -32,8 +32,8 @@ export default function ChatMessage({ message }) {
   if (isAgent) {
     return (
       <div
-        className="w-full rounded-2xl border border-primary/10 px-5 py-4 text-base leading-relaxed"
-        style={{ backgroundColor: "color-mix(in oklch, var(--color-card), var(--color-primary) 7%)" }}
+        className="w-full rounded-2xl border border-mustard/20 px-5 py-4 text-base leading-relaxed"
+        style={{ backgroundColor: "color-mix(in oklch, var(--color-card), var(--color-mustard) 12%)" }}
       >
         <ReactMarkdown remarkPlugins={[remarkGfm]} components={MARKDOWN_COMPONENTS}>
           {message.content || ""}

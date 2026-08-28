@@ -43,7 +43,7 @@ function HistoryStack({ threads, onSelectThread }) {
             style={{
               borderRadius: "1.25rem",
               background:
-                "radial-gradient(130% 130% at 20% 10%, rgba(240,157,81,0.38) 0%, rgba(242,241,236,0.92) 48%, rgba(242,241,236,1) 100%)",
+                "radial-gradient(130% 130% at 20% 10%, rgba(217,174,52,0.35) 0%, rgba(242,241,236,0.92) 48%, rgba(242,241,236,1) 100%)",
             }}
             initial={{ opacity: 0, y: 14, rotate: i % 2 === 0 ? -2 : 2 }}
             animate={{ opacity: 1, y: 0, rotate: 0 }}
@@ -51,7 +51,7 @@ function HistoryStack({ threads, onSelectThread }) {
             whileHover={{ y: -4, scale: 1.02 }}
           >
             <div className="pointer-events-none absolute inset-0 border border-border" style={{ borderRadius: "1.25rem" }} />
-            <MessageCircle className="relative z-[1] size-4 text-primary/70" />
+            <MessageCircle className="relative z-[1] size-4 text-mustard" />
             <div className="relative z-[1]">
               <p className="line-clamp-2 text-sm leading-snug text-foreground">{thread.title}</p>
               <p className="mt-1.5 text-xs text-muted-foreground">{relativeTime(thread.updatedAt)}</p>
@@ -111,7 +111,7 @@ export default function WelcomeScreen({ name, onContinue, threads = [], onSelect
         style={{
           borderRadius: "1.75rem",
           background:
-            "radial-gradient(120% 120% at 15% 10%, rgba(208,55,17,0.45) 0%, rgba(240,157,81,0.22) 42%, rgba(242,241,236,1) 100%)",
+            "radial-gradient(120% 120% at 15% 10%, rgba(217,174,52,0.5) 0%, rgba(240,157,81,0.22) 42%, rgba(242,241,236,1) 100%)",
         }}
         initial={{ opacity: 0, scale: 0.94 }}
         animate={{ opacity: 1, scale: 1 }}

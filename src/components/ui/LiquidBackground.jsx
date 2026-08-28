@@ -6,8 +6,10 @@ import { Warp } from "@paper-design/shaders-react";
  * "AnimatedLiquidBackground" component — tuned to the Porcelain/Charcoal/
  * Sand/Taupe palette (charcoal background, taupe accent) instead of its
  * default presets. Retuned to the Tomato/Platinum/Soft Linen/Gunmetal/Sandy
- * Brown palette: linen and platinum carry the field, tomato and sandy brown
- * are the moving warmth. The wash on top is heavier than the dark version
+ * Brown palette: linen and platinum carry the field, sandy brown and mustard
+ * are the moving warmth — tomato is deliberately left out of this shader so
+ * the app's one bright-orange accent stays foreground UI, not the backdrop
+ * every screen sits on. The wash on top is heavier than the dark version
  * needed — bright hues bloom far more on a light ground.
  */
 export default function LiquidBackground({ children, className = "" }) {
@@ -16,7 +18,7 @@ export default function LiquidBackground({ children, className = "" }) {
       <div className="pointer-events-none absolute inset-0 z-0">
         <Warp
           style={{ width: "100%", height: "100%" }}
-          colors={["#e0dfd5", "#f09d51", "#d03711", "#e8e9eb"]}
+          colors={["#e0dfd5", "#f09d51", "#d9ae34", "#e8e9eb"]}
           proportion={0.4}
           softness={1.1}
           distortion={0.15}

@@ -13,7 +13,7 @@ import {
   Check,
   Trash2,
 } from "lucide-react";
-import { cn, resolveCartSize, DEFAULT_ASSISTANT_NAME, getAssistantInitials } from "@/lib/utils";
+import { cn, resolveCartSize, DEFAULT_ASSISTANT_NAME, DEFAULT_ASSISTANT_AVATAR } from "@/lib/utils";
 import { ProductArt } from "@/components/products/ProductCard";
 
 // Nested buttons aren't valid HTML, so the row is a div with the label as the
@@ -26,7 +26,7 @@ function ThreadRow({ thread, onClick, onDelete }) {
     <div
       className={cn(
         "group flex w-full items-center gap-1 rounded-xl pr-1.5 transition-colors",
-        thread.isActive ? "bg-primary/10 text-foreground" : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
+        thread.isActive ? "bg-mustard/15 text-foreground" : "text-muted-foreground hover:bg-secondary/60 hover:text-foreground"
       )}
       onMouseLeave={() => setConfirming(false)}
     >
@@ -108,8 +108,8 @@ export default function ChatSidebar({
       className="relative z-10 flex h-screen shrink-0 flex-col border-r border-border bg-card/40 backdrop-blur-sm"
     >
       <div className={cn("flex items-center gap-2 border-b border-border p-3", collapsed && "flex-col")}>
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-full bg-primary/20">
-          <span className="text-sm font-semibold text-primary">{getAssistantInitials(displayName)}</span>
+        <div className="flex size-9 shrink-0 items-center justify-center overflow-hidden rounded-full bg-mustard/20">
+          <img src={DEFAULT_ASSISTANT_AVATAR} alt={displayName} className="size-full object-cover" />
         </div>
         {!collapsed && <span className="font-hero flex-1 truncate text-sm">{displayName}</span>}
         <button

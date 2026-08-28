@@ -10,7 +10,15 @@
      near-neutral because shadcn spends `accent` on subtle hover surfaces, not
      brand moments — the brand orange lives in --color-sand. This tomato is
      dark enough to carry near-white text (4.7:1) and to read as text on linen
-     (3.7:1), so it needs no deepened companion. */
+     (3.7:1), so it needs no deepened companion.
+
+     --color-mustard is the ambient half of that warmth: glows, gradients,
+     hover washes and back-shaded surfaces lean on this golden yellow instead
+     of tomato, so tomato itself stays rare enough to still read as an accent
+     (buttons, the user's own bubble, selection state) rather than the app's
+     wallpaper. Never used as small standalone text — at a lightness this
+     close to the page it can't clear text-contrast, so it stays a fill/border/
+     glow color, exactly how --color-sand already behaves. */
   --color-background: #e0dfd5;
   --color-foreground: #313638;
   --color-card: #f2f1ec;
@@ -25,6 +33,8 @@
   --color-accent-foreground: #313638;
   --color-sand: #f09d51;
   --color-sand-foreground: #313638;
+  --color-mustard: #d9ae34;
+  --color-mustard-foreground: #313638;
   --color-destructive: #b23a2a;
   --color-border: #cdcbbe;
   --color-ring: #d03711;

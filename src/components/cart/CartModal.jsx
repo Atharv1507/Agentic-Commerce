@@ -46,7 +46,7 @@ function LineSizePicker({ item, onChange }) {
             className={cn(
               "rounded border px-1.5 py-0.5 text-[0.65rem] leading-none font-medium tracking-wide transition-colors",
               soldOut && "cursor-not-allowed border-transparent text-muted-foreground/40 line-through",
-              !soldOut && !selected && "border-border text-muted-foreground hover:border-primary hover:text-foreground",
+              !soldOut && !selected && "border-border text-muted-foreground hover:border-mustard hover:text-foreground",
               selected && "border-primary bg-primary text-primary-foreground",
               selected && short && "border-destructive bg-destructive"
             )}
@@ -128,7 +128,7 @@ export default function CartModal({ items, onClose, onConfirm, onRemove, onChang
                   </div>
 
                   <div className="flex shrink-0 items-center gap-2">
-                    <p className="font-semibold text-primary">
+                    <p className="font-semibold text-foreground">
                       ₹{((item.price || 0) * (item.quantity || 1)).toLocaleString()}
                     </p>
                     <button

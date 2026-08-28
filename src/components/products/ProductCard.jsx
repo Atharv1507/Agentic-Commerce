@@ -21,7 +21,7 @@ export function ProductArt({ product, className }) {
       style={{
         backgroundImage: tint
           ? `radial-gradient(120% 120% at 20% 15%, ${tint}33 0%, transparent 55%), linear-gradient(160deg, var(--color-secondary) 0%, var(--color-card) 100%)`
-          : "linear-gradient(160deg, var(--color-secondary) 0%, var(--color-card) 100%)",
+          : "linear-gradient(160deg, var(--color-secondary) 0%, var(--color-card) 10%)",
       }}
     >
       <span className="font-hero text-6xl text-foreground/10">{product.brand?.charAt(0) || "?"}</span>
@@ -58,7 +58,7 @@ export function SizeRail({ product, userSize, showCounts = false, className }) {
               count === 0
                 ? "border-transparent text-muted-foreground/45 line-through"
                 : "border-border text-foreground",
-              isMine && count > 0 && "border-primary bg-primary/10 text-primary"
+              isMine && count > 0 && "border-mustard bg-mustard/15 text-foreground"
             )}
           >
             {size}
@@ -81,7 +81,7 @@ export default function ProductCard({ product, inCart, onAddToCart, onOpen, layo
   return (
     <motion.div layoutId={layoutId} whileHover={{ y: -4 }} transition={{ duration: 0.2 }}>
       <Card
-        className="group relative cursor-pointer gap-0 overflow-hidden border-border p-0 transition-colors hover:border-primary/50"
+        className="group relative cursor-pointer gap-0 overflow-hidden border-border p-0 transition-colors hover:border-mustard/60"
         onClick={onOpen}
       >
         <div className="relative aspect-[4/3]">
@@ -99,7 +99,7 @@ export default function ProductCard({ product, inCart, onAddToCart, onOpen, layo
           <SizeRail product={product} userSize={userSize} className="my-3" />
 
           <div className="flex items-center justify-between">
-            <span className="text-lg font-semibold text-primary">₹{product.price?.toLocaleString()}</span>
+            <span className="text-lg font-semibold text-foreground">₹{product.price?.toLocaleString()}</span>
 
             <motion.button
               onClick={(e) => {

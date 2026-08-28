@@ -13,7 +13,7 @@ import {
   MessageScrollerItem,
   MessageScrollerButton,
 } from "@/components/ui/message-scroller";
-import { DEFAULT_ASSISTANT_NAME, getAssistantInitials } from "@/lib/utils";
+import { DEFAULT_ASSISTANT_NAME, DEFAULT_ASSISTANT_AVATAR } from "@/lib/utils";
 
 export default function ChatWindow({
   messages,
@@ -34,7 +34,7 @@ export default function ChatWindow({
     <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
       {/* Ambient glow — keeps the shader's warmth alive behind the chat instead of a flat wall of linen */}
       <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-        <div className="ambient-glow absolute -top-32 -right-24 size-96 rounded-full bg-primary/20 blur-3xl" />
+        <div className="ambient-glow absolute -top-32 -right-24 size-96 rounded-full bg-mustard/25 blur-3xl" />
         <div
           className="ambient-glow absolute -bottom-40 -left-20 size-96 rounded-full bg-sand/25 blur-3xl"
           style={{ animationDelay: "-7s" }}
@@ -47,12 +47,12 @@ export default function ChatWindow({
         initial={{ opacity: 0, y: -10 }}
         animate={{ opacity: 1, y: 0 }}
       >
-        <div className="relative flex size-9 items-center justify-center rounded-full bg-primary/20">
+        <div className="relative flex size-9 items-center justify-center overflow-hidden rounded-full bg-mustard/20">
           <span
-            className="absolute inset-0 rounded-full bg-primary/40 blur-md"
+            className="absolute inset-0 rounded-full bg-mustard/40 blur-md"
             style={{ animation: "ambient-drift 3.2s ease-in-out infinite" }}
           />
-          <span className="relative text-sm font-semibold text-primary">{getAssistantInitials(displayName)}</span>
+          <img src={DEFAULT_ASSISTANT_AVATAR} alt={displayName} className="relative size-full object-cover" />
         </div>
         <div>
           <h2 className="text-lg font-semibold">{displayName}</h2>

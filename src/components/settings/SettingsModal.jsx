@@ -39,7 +39,7 @@ function OptionPills({ options, value, onChange }) {
           onClick={() => onChange(option)}
           className={cn(
             "flex-1 rounded-lg border px-3 py-2 text-sm transition-colors",
-            value === option ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:border-primary/50"
+            value === option ? "border-primary bg-primary/10 text-foreground" : "border-border text-muted-foreground hover:border-mustard/60"
           )}
         >
           {option}

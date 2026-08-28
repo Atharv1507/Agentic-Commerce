@@ -23,7 +23,7 @@ export default function OptionChips({ options, onSelect }) {
               variant="outline"
               size="sm"
               onClick={() => onSelect(option)}
-              className="rounded-full border-border bg-card text-sm font-medium hover:border-primary hover:bg-primary/10"
+              className="rounded-full border-border bg-card text-sm font-medium hover:border-mustard hover:bg-mustard/15"
             >
               {option}
             </Button>

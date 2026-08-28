@@ -41,7 +41,7 @@ export default function TypingIndicator({ progress }) {
 
   return (
     <div className="flex w-full justify-start">
-      <div className="flex max-w-md flex-col gap-1.5 rounded-2xl rounded-bl-md border border-primary/10 bg-card px-5 py-3">
+      <div className="flex max-w-md flex-col gap-1.5 rounded-2xl rounded-bl-md border border-mustard/20 bg-card px-5 py-3">
         <div className="flex items-center gap-2.5">
           {/* Keyed on the label so each new stage crossfades instead of snapping */}
           <AnimatePresence mode="wait" initial={false}>
@@ -60,7 +60,7 @@ export default function TypingIndicator({ progress }) {
           {[0, 1, 2].map((i) => (
             <motion.div
               key={i}
-              className="size-2 rounded-full bg-primary shadow-[0_0_6px_var(--color-primary)]"
+              className="size-2 rounded-full bg-mustard shadow-[0_0_6px_var(--color-mustard)]"
               animate={{ y: [0, -6, 0], opacity: [0.5, 1, 0.5] }}
               transition={{
                 duration: 0.6,

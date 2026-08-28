@@ -178,7 +178,7 @@ export default function ProductGrid({ products, cart, onAddToCart, gridId = "gri
                                   "cursor-not-allowed border-transparent text-muted-foreground/40 line-through",
                                 !soldOut &&
                                   chosenSize !== size &&
-                                  "border-border hover:border-primary hover:text-foreground",
+                                  "border-border hover:border-mustard hover:text-foreground",
                                 chosenSize === size && "border-primary bg-primary text-primary-foreground"
                               )}
                             >
@@ -191,7 +191,7 @@ export default function ProductGrid({ products, cart, onAddToCart, gridId = "gri
                     </div>
                   )}
 
-                  <span className="text-2xl font-semibold text-primary">₹{selected.price?.toLocaleString()}</span>
+                  <span className="text-2xl font-semibold text-foreground">₹{selected.price?.toLocaleString()}</span>
 
                   <Button
                     size="lg"

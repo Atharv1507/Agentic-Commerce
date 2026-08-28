@@ -39,7 +39,7 @@ export default function PreferenceModal({ form, onSubmit, onSkipAll }) {
       initial={{ opacity: 0, y: 8 }}
       animate={{ opacity: 1, y: 0 }}
     >
-      <div className="w-full max-w-xl overflow-hidden rounded-2xl rounded-bl-md border border-primary/15 bg-card">
+      <div className="w-full max-w-xl overflow-hidden rounded-2xl rounded-bl-md border border-mustard/25 bg-card">
         <div className="flex items-start gap-3 border-b border-border px-5 py-4">
           <div className="min-w-0 flex-1">
             <h3 className="text-sm font-semibold">{form.title}</h3>
@@ -84,7 +84,7 @@ export default function PreferenceModal({ form, onSubmit, onSkipAll }) {
                           "rounded-full border px-3 py-1.5 text-xs capitalize transition-colors",
                           isOn
                             ? "border-primary bg-primary text-primary-foreground"
-                            : "border-border bg-secondary/40 text-muted-foreground hover:border-primary/40 hover:text-foreground"
+                            : "border-border bg-secondary/40 text-muted-foreground hover:border-mustard/60 hover:text-foreground"
                         )}
                       >
                         {label}
