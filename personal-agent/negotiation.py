@@ -17,7 +17,7 @@ from typing import Any, Callable, Optional
 
 import httpx
 
-from config import SELLER_AGENT_URL
+from config import SELLER_AGENT_URL, SELLER_AUTH_HEADERS
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -132,7 +132,9 @@ def forget_seller_session(session_id: str) -> None:
     """
     try:
         with httpx.Client(timeout=5.0) as client:
-            client.delete(f"{SELLER_AGENT_URL}/session/{session_id}")
+            client.delete(
+                f"{SELLER_AGENT_URL}/session/{session_id}", headers=SELLER_AUTH_HEADERS
+            )
     except Exception:
         # Best effort — the seller prunes its own sessions as a backstop.
         pass
@@ -154,6 +156,7 @@ def message_seller(text: str, session_id: str) -> dict[str, Any]:
             response = client.post(
                 f"{SELLER_AGENT_URL}/message",
                 json={"session_id": session_id, "text": text},
+                headers=SELLER_AUTH_HEADERS,
             )
             response.raise_for_status()
             result = response.json()
@@ -187,6 +190,7 @@ def fetch_facets(
             response = client.post(
                 f"{SELLER_AGENT_URL}/facets",
                 json={"query": query, "gender": gender, "full": full},
+                headers=SELLER_AUTH_HEADERS,
             )
             response.raise_for_status()
             return response.json()
@@ -215,12 +219,135 @@ def check_sizes(product_ids: list[str], size: Optional[str]) -> dict[str, Any]:
             response = client.post(
                 f"{SELLER_AGENT_URL}/stock",
                 json={"product_ids": product_ids, "size": size},
+                headers=SELLER_AUTH_HEADERS,
             )
             response.raise_for_status()
             return response.json()
     except Exception as e:
         logger.error(f"Stock check failed: {e}")
         return {}
+
+
+def create_seller_order(
+    product_ids: list[str],
+    buyer_name: str,
+    buyer_address: str,
+    buyer_email: str,
+    buyer_phone: str,
+    sizes: Optional[dict[str, str]] = None,
+    buyer_size: Optional[str] = None,
+    purposes: Optional[dict[str, str]] = None,
+    buyer_context: Optional[dict[str, Any]] = None,
+) -> dict[str, Any]:
+    """Ask the merchant to create the Razorpay order for this cart.
+
+    The merchant owns its own Razorpay account, so it is the only party that
+    can legitimately create an order against it — this agent no longer holds
+    merchant payment credentials at all.
+
+    Unlike `check_sizes`, an unreachable seller here is fatal rather than
+    something to shrug off: a failed stock pre-check just means "unknown", but
+    a failed order means no order exists, and pretending otherwise would show
+    the shopper a checkout that never happened. Returned as a structured error
+    for `checkout_cart` to explain.
+
+    Returns:
+        The merchant's order dict, or `{"error": "seller_unreachable"}`.
+    """
+    payload: dict[str, Any] = {
+        "product_ids": product_ids,
+        "buyer_name": buyer_name,
+        "buyer_address": buyer_address,
+        "buyer_email": buyer_email,
+        "buyer_phone": buyer_phone,
+    }
+    if sizes:
+        payload["sizes"] = sizes
+    if buyer_size:
+        payload["buyer_size"] = buyer_size
+    if purposes:
+        payload["purposes"] = purposes
+    if buyer_context:
+        payload["buyer_context"] = buyer_context
+
+    try:
+        # Longer than the read-only calls: this one waits on Razorpay's own API
+        # behind the merchant, and abandoning it early could leave an order
+        # created at the merchant that this agent never learns about.
+        with httpx.Client(timeout=45.0) as client:
+            response = client.post(
+                f"{SELLER_AGENT_URL}/order",
+                json=payload,
+                headers=SELLER_AUTH_HEADERS,
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Seller order creation failed: {e}")
+        return {
+            "error": "seller_unreachable",
+            "message": (
+                "The shop's system could not be reached, so no order was created and "
+                "nothing has been charged. Tell the shopper plainly and suggest trying "
+                "again in a moment. Their cart is unchanged."
+            ),
+        }
+
+
+def verify_seller_payment(order_id: str, payment_id: Optional[str] = None) -> dict[str, Any]:
+    """Ask the merchant to confirm a payment against Razorpay.
+
+    Read-only on the merchant's side, so a retry is harmless.
+
+    Returns:
+        The merchant's verification result, or `{"error": "seller_unreachable"}`
+        — deliberately distinct from the merchant's own
+        `{"error": "verification_failed"}`, since "we couldn't ask" and
+        "Razorpay said no" call for different things to be said to a shopper.
+    """
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{SELLER_AGENT_URL}/payment/verify",
+                json={"order_id": order_id, "payment_id": payment_id},
+                headers=SELLER_AUTH_HEADERS,
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Seller payment verification failed: {e}")
+        return {
+            "error": "seller_unreachable",
+            "message": (
+                "Could not reach the shop to confirm the payment. Do not tell the "
+                "shopper the payment failed — it may well have succeeded. Say the "
+                "confirmation is delayed and their receipt will follow."
+            ),
+        }
+
+
+def _offers_from_reply(reply: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull live merchant offers out of a seller reply's tool results.
+
+    The merchant's own prose is discarded (see `_products_from_reply`), so an
+    offer only reaches the shopper as structured data that this agent's model
+    then words for itself — the same route product cards already take. Only
+    offers the merchant marked as actually applying are surfaced: an `almost`
+    offer is a fact about what *would* qualify, and letting it through here
+    would invite the model to describe an unearned discount as earned.
+    """
+    offers: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for tr in reply.get("tool_results") or []:
+        if tr.get("tool") != "evaluate_offers":
+            continue
+        for offer in (tr.get("result") or {}).get("offers", []):
+            offer_id = offer.get("id")
+            if not offer.get("applies") or not offer_id or offer_id in seen:
+                continue
+            seen.add(offer_id)
+            offers.append(offer)
+    return offers
 
 
 def _products_from_reply(reply: dict[str, Any]) -> list[dict[str, Any]]:
@@ -539,6 +666,8 @@ def find_products(
     size_rejected: list[dict[str, Any]] = []
     feedback: Optional[str] = None
     seller_unreachable = False
+    # Live campaigns the merchant volunteered during this search, if any.
+    merchant_offers: list[dict[str, Any]] = []
 
     max_rounds = MAX_COMPLEMENT_ROUNDS if purpose == "complement" else MAX_SELLER_ROUNDS
 
@@ -559,6 +688,13 @@ def find_products(
             break
 
         offered = _products_from_reply(reply)
+        # Kept per round and overwritten rather than accumulated: the merchant
+        # re-evaluates offers against whatever basket the latest round is
+        # about, so an offer from an earlier, wider brief may no longer hold.
+        # The last round's answer is the only current one.
+        round_offers = _offers_from_reply(reply)
+        if round_offers:
+            merchant_offers = round_offers
         progress("evaluating", round=round_no, offered=len(offered))
 
         fresh_accepted = 0
@@ -654,6 +790,13 @@ def find_products(
         # eviction below drops the oldest-shown, not the oldest-first-seen.
         catalog = thread.setdefault("shown_catalog", {})
         for p in ranked:
+            # Remember whether this was shown as a cross-sell or as what the
+            # shopper actually asked for. `add_to_cart` builds a cart line by
+            # copying this record, so the marker rides along to the cart and
+            # then to the order — which is the only way the merchant can
+            # measure a real attach rate later. Without it, a complement is
+            # indistinguishable from a primary line by the time it's sold.
+            p["purpose"] = purpose
             catalog.pop(p["id"], None)
             catalog[p["id"]] = p
         for stale in list(catalog)[:-SHOWN_CATALOG_MEMORY]:
@@ -679,6 +822,19 @@ def find_products(
 
     exact = sum(1 for p in ranked if p.get("exact_match"))
     result["exact_match_count"] = exact
+
+    # Merchant campaigns, passed through as the merchant stated them. This
+    # agent does not compute, adjust or re-word the saving — it is the
+    # merchant's money and the merchant's promise, and the discount is applied
+    # merchant-side at order time whether or not it gets mentioned here.
+    if merchant_offers:
+        result["offers"] = merchant_offers
+        result["offers_note"] = (
+            "The shop is running these offers on this selection. Mention them naturally, "
+            "using the shop's own wording for the saving. Do not invent, combine or "
+            "recalculate any figure — only one discount applies per order, and the shop "
+            "applies it at checkout regardless of what you say here."
+        )
 
     if relaxed_tags:
         readable = {

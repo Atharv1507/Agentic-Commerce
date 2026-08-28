@@ -1,9 +1,7 @@
-import os
 import logging
 import time
 from typing import Any, Callable, Optional
 
-import razorpay
 from dotenv import load_dotenv
 
 from config import DEFAULT_SPEND_LIMIT
@@ -14,16 +12,24 @@ from context import (
     normalize_size,
     scrub_constraints,
 )
-from negotiation import check_sizes, find_products, fetch_facets
+from negotiation import (
+    check_sizes,
+    create_seller_order,
+    fetch_facets,
+    find_products,
+    verify_seller_payment,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-razorpay_client = razorpay.Client(
-    auth=(os.getenv("RAZORPAY_KEY_ID"), os.getenv("RAZORPAY_KEY_SECRET"))
-)
+# No Razorpay client here, deliberately. The merchant owns its own Razorpay
+# account, so the merchant's agent is the only party that can create an order
+# or read a payment against it — this agent asks, via the Seller Agent's
+# /order and /payment/verify routes. A buyer agent holding merchant payment
+# credentials wouldn't be a buyer agent; it would be the shop.
 
 # Preference keys the agent is allowed to persist ACCOUNT-WIDE. These describe
 # the shopper, so they can reasonably shape any future search.
@@ -532,6 +538,35 @@ def update_cart(arguments: dict[str, Any], session: dict[str, Any]) -> dict[str,
     return {"status": "ok", "cart": cart, "cart_updated": True, "line": line}
 
 
+def buyer_context(session: dict[str, Any]) -> dict[str, Any]:
+    """Summarise this shopper's history for the merchant's lifecycle offers.
+
+    Derived from orders this agent already holds, so it costs nothing extra.
+    Only *paid* orders count — an abandoned checkout is not a purchase, and
+    counting it would wrongly disqualify a genuine first-time buyer from a
+    first-order discount.
+
+    The merchant treats this as self-reported and unverified, which is why it
+    may only ever unlock a discount: the worst an inaccurate value here can do
+    is cost the merchant margin, never overcharge the shopper.
+    """
+    orders = [
+        record
+        for record in (session.get("orders") or {}).values()
+        if record.get("status") == "paid"
+    ]
+    context: dict[str, Any] = {"order_count": len(orders)}
+
+    if orders:
+        last_paid = max((record.get("paid_at") or 0) for record in orders)
+        if last_paid:
+            context["days_since_last_order"] = round((time.time() - last_paid) / 86400, 1)
+        context["lifetime_spend_inr"] = sum(
+            int(record.get("amount_inr") or 0) for record in orders
+        )
+    return context
+
+
 def checkout_cart(session: dict[str, Any], confirm_over_limit: bool = False) -> dict[str, Any]:
     """Create a Razorpay order for the user's current session cart.
 
@@ -639,73 +674,149 @@ def checkout_cart(session: dict[str, Any], confirm_over_limit: bool = False) -> 
             ),
         }
 
-    try:
-        order = razorpay_client.order.create(
-            {
-                "amount": amount * 100,
-                "currency": "INR",
-                "receipt": f"receipt_{'_'.join(product_ids[:3])}",
-            }
+    lines = [
+        {
+            "id": item["id"],
+            "name": item.get("name"),
+            "brand": item.get("brand"),
+            "size": normalize_size(item.get("size")) or default_size,
+            "quantity": item.get("quantity", 1),
+            "price": item.get("price"),
+        }
+        for item in cart
+    ]
+    buyer = {
+        "name": user.get("name", ""),
+        "email": user.get("email", ""),
+        "phone": user.get("phone", ""),
+        "address": user.get("address", ""),
+    }
+
+    # The merchant's create_order takes one list entry per unit, so quantities
+    # are expanded here rather than passed as a count.
+    unit_ids = [item["id"] for item in cart for _ in range(item.get("quantity", 1))]
+    sizes = {
+        item["id"]: normalize_size(item.get("size")) or default_size
+        for item in cart
+        if normalize_size(item.get("size")) or default_size
+    }
+    # Which lines the shopper accepted as a cross-sell rather than asked for.
+    # Passed through so the merchant can measure its own attach rate honestly;
+    # it has no effect on price.
+    purposes = {
+        item["id"]: "complement" for item in cart if item.get("purpose") == "complement"
+    }
+
+    order = create_seller_order(
+        unit_ids,
+        buyer["name"],
+        buyer["address"],
+        buyer["email"],
+        buyer["phone"],
+        sizes=sizes or None,
+        buyer_size=default_size,
+        purposes=purposes or None,
+        buyer_context=buyer_context(session),
+    )
+
+    if order.get("error"):
+        # The merchant refused or was unreachable. Nothing was charged and the
+        # cart is deliberately left intact so the shopper can retry.
+        logger.error(f"Seller declined or failed to create the order: {order.get('error')}")
+        return order
+
+    charged_inr = order.get("amount_inr", amount)
+
+    # The spend limit is an authorisation ceiling, not a display value, so it
+    # is re-checked against what the merchant actually decided to charge. The
+    # earlier check used this agent's own cart total; the merchant prices from
+    # its live catalogue and may apply a campaign, so the two can legitimately
+    # differ. A discount is fine. A total ABOVE what the shopper approved is
+    # not, and must not reach the payment modal — the order already exists at
+    # the merchant, but an unpaid order is harmless and an unauthorised charge
+    # is not.
+    if charged_inr > spend_limit and not confirm_over_limit:
+        logger.warning(
+            f"Merchant priced order {order.get('order_id')} at Rs {charged_inr}, above the "
+            f"Rs {spend_limit} limit approved for a Rs {amount} cart; withholding payment"
+        )
+        return {
+            "error": "spend_limit_exceeded",
+            "amount_inr": charged_inr,
+            "spend_limit": spend_limit,
+            "over_by": charged_inr - spend_limit,
+            "message": (
+                f"The shop priced this order at Rs {charged_inr:,}, above the shopper's "
+                f"Rs {spend_limit:,} auto-approve limit. Nothing has been charged. The app "
+                f"is showing them a Confirm/Cancel dialog — say the total and the limit in "
+                f"one line, do not call ask_user, and do not retry checkout_cart yourself."
+            ),
+        }
+
+    if charged_inr != amount:
+        # Worth recording rather than silently accepting: the merchant's price
+        # is authoritative, but a shopper who was quoted one number and
+        # charged another deserves an explanation, and the audit trail is where
+        # it belongs.
+        logger.info(
+            f"Merchant repriced order {order.get('order_id')}: "
+            f"cart said Rs {amount}, charged Rs {charged_inr}"
         )
 
-        logger.info(f"Order created: {order['id']} for products: {product_ids}")
+    # Tracked so verify_payment can tell a first confirmation from a repeat
+    # one and never re-process an order already marked paid, and so the
+    # receipts page has a real record to render without a second lookup —
+    # a card would otherwise have nothing to show until this order is
+    # separately re-fetched from Razorpay.
+    session.setdefault("orders", {})[order["order_id"]] = {
+        "status": "created",
+        "amount_inr": charged_inr,
+        "subtotal_inr": order.get("subtotal_inr", amount),
+        "discount_inr": order.get("discount_inr", 0),
+        "applied_campaign": order.get("applied_campaign"),
+        "currency": order.get("currency", "INR"),
+        "lines": lines,
+        "buyer": buyer,
+        "created_at": time.time(),
+    }
+    session["cart"] = []
 
-        lines = [
-            {
-                "id": item["id"],
-                "name": item.get("name"),
-                "brand": item.get("brand"),
-                "size": normalize_size(item.get("size")) or default_size,
-                "quantity": item.get("quantity", 1),
-                "price": item.get("price"),
-            }
-            for item in cart
-        ]
-        buyer = {
-            "name": user.get("name", ""),
-            "email": user.get("email", ""),
-            "phone": user.get("phone", ""),
-            "address": user.get("address", ""),
-        }
-        # Tracked so verify_payment can tell a first confirmation from a repeat
-        # one and never re-process an order already marked paid, and so the
-        # receipts page has a real record to render without a second lookup —
-        # a card would otherwise have nothing to show until this order is
-        # separately re-fetched from Razorpay.
-        session.setdefault("orders", {})[order["id"]] = {
-            "status": "created",
-            "amount_inr": amount,
-            "currency": order["currency"],
-            "lines": lines,
-            "buyer": buyer,
-            "created_at": time.time(),
-        }
-        session["cart"] = []
+    result = {
+        "order_id": order["order_id"],
+        # Razorpay works in paise and the frontend passes `amount` straight
+        # to the checkout SDK, so it has to stay in paise. The model reads
+        # this dict too and was quoting the paise figure as rupees — two
+        # ₹1,049 shirts came back as "₹209,800". `amount_inr` is the one to
+        # say out loud, and the note is here because a bare pair of numbers
+        # is exactly the ambiguity that caused the bug.
+        "amount": order.get("amount", charged_inr * 100),
+        "amount_inr": charged_inr,
+        "amount_note": (
+            f"Quote ₹{charged_inr:,} to the shopper. `amount` is in paise "
+            f"for the payment SDK — never state it as rupees."
+        ),
+        "currency": order.get("currency", "INR"),
+        "product_ids": product_ids,
+        "lines": lines,
+        "buyer": buyer,
+        "status": "created",
+        "subtotal_inr": order.get("subtotal_inr", amount),
+        "discount_inr": order.get("discount_inr", 0),
+        "applied_campaign": order.get("applied_campaign"),
+        "message": "Order created. Complete payment in the checkout modal.",
+    }
 
-        return {
-            "order_id": order["id"],
-            # Razorpay works in paise and the frontend passes `amount` straight
-            # to the checkout SDK, so it has to stay in paise. The model reads
-            # this dict too and was quoting the paise figure as rupees — two
-            # ₹1,049 shirts came back as "₹209,800". `amount_inr` is the one to
-            # say out loud, and the note is here because a bare pair of numbers
-            # is exactly the ambiguity that caused the bug.
-            "amount": order["amount"],
-            "amount_inr": order["amount"] // 100,
-            "amount_note": (
-                f"Quote ₹{order['amount'] // 100:,} to the shopper. `amount` is in paise "
-                f"for the payment SDK — never state it as rupees."
-            ),
-            "currency": order["currency"],
-            "product_ids": product_ids,
-            "lines": lines,
-            "buyer": buyer,
-            "status": "created",
-            "message": "Order created. Complete payment in the checkout modal.",
-        }
-    except Exception as e:
-        logger.error(f"Razorpay error: {e}")
-        return {"error": "order_creation_failed"}
+    if order.get("applied_campaign"):
+        campaign = order["applied_campaign"]
+        # Overwrites the generic message so the audit trail's explanation-key
+        # lookup surfaces the discount rather than "Order created."
+        result["message"] = (
+            f"Order created for ₹{charged_inr:,} — ₹{order.get('subtotal_inr', amount):,} "
+            f"less a ₹{order.get('discount_inr', 0):,} discount the shop applied "
+            f"({campaign.get('description')}). Tell the shopper about the saving, then "
+            f"ask them to complete payment in the checkout modal."
+        )
+    return result
 
 
 def update_profile(arguments: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
@@ -832,21 +943,23 @@ def clear_preferences(arguments: dict[str, Any], session: dict[str, Any]) -> dic
 def verify_payment(
     session: dict[str, Any], order_id: str, payment_id: Optional[str] = None
 ) -> dict[str, Any]:
-    """Verify payment status for an order.
+    """Verify payment status for an order, via the merchant that took it.
 
-    Prefers looking up the payment itself (authoritative capture status) over
-    the order aggregate, since the caller may pass the two IDs swapped — the
-    LLM is handed both an order_id and a payment_id in the same sentence and
-    isn't a reliable router between them.
+    The actual Razorpay lookup happens on the merchant's side — it owns the
+    account — and it prefers the payment record over the order aggregate,
+    since the caller may pass the two IDs swapped: the LLM is handed both an
+    order_id and a payment_id in the same sentence and isn't a reliable router
+    between them.
 
-    An order already recorded as paid is not re-verified against Razorpay: the
-    stored result is returned as-is. Without this, a shopper (or an agent)
-    resending the same payment-completion message would look identical to a
-    fresh confirmation, which is exactly the double-processing this guards
-    against — verifying is harmless today since nothing here ships or charges
-    again on a repeat call, but the same order record is what a real
-    fulfillment step would key off, so it must not look "freshly confirmed"
-    twice.
+    An order already recorded as paid is not re-verified: the stored result is
+    returned as-is. Without this, a shopper (or an agent) resending the same
+    payment-completion message would look identical to a fresh confirmation,
+    which is exactly the double-processing this guards against — verifying is
+    harmless today since nothing here ships or charges again on a repeat call,
+    but the same order record is what a real fulfillment step would key off,
+    so it must not look "freshly confirmed" twice. This guard stays on this
+    side deliberately: it protects what this agent has already told *this*
+    shopper, which is not something the merchant can know.
 
     Args:
         session: Current user session (contains "orders", the local order
@@ -863,31 +976,12 @@ def verify_payment(
         logger.info(f"verify_payment short-circuit: {order_id} already marked paid")
         return {**existing.get("result", {}), "already_verified": True}
 
-    try:
-        if payment_id:
-            payment = razorpay_client.payment.fetch(payment_id)
-            logger.info(f"Payment verified for {payment_id}: {payment['status']}")
-            result = {
-                "order_id": payment.get("order_id", order_id),
-                "payment_id": payment_id,
-                "status": payment["status"],
-                "amount": payment["amount"],
-                "amount_inr": payment["amount"] // 100,
-                "amount_note": f"Quote ₹{payment['amount'] // 100:,} — `amount` is in paise.",
-            }
-        else:
-            order = razorpay_client.order.fetch(order_id)
-            logger.info(f"Payment verified for {order_id}: {order['status']}")
-            result = {
-                "order_id": order["id"],
-                "status": order["status"],
-                "amount": order["amount"],
-                "amount_inr": order["amount"] // 100,
-                "amount_note": f"Quote ₹{order['amount'] // 100:,} — `amount` is in paise.",
-            }
-    except Exception as e:
-        logger.error(f"Payment verification error: {e}")
-        return {"error": "verification_failed"}
+    # Asked of the merchant rather than Razorpay directly: the merchant owns
+    # the account the payment was made into, and it needs to settle the order
+    # in its own books as part of confirming it.
+    result = verify_seller_payment(order_id, payment_id)
+    if result.get("error"):
+        return result
 
     if result.get("status") in ("captured", "paid"):
         # Merged onto the existing record rather than replacing it — checkout_cart
@@ -930,6 +1024,8 @@ def extract_structured_payload(tool_results: list[dict[str, Any]]) -> dict[str, 
     form: Optional[dict[str, Any]] = None
     profile_dirty = False
     cart: Optional[list[dict[str, Any]]] = None
+    offers: list[dict[str, Any]] = []
+    seen_offer_ids: set[str] = set()
 
     for tr in tool_results:
         result = tr.get("result") or {}
@@ -952,6 +1048,16 @@ def extract_structured_payload(tool_results: list[dict[str, Any]]) -> dict[str, 
                     seen_ids.add(product_id)
                     bucket.append(product)
 
+            # Merchant campaigns ride along on a search result. Deduplicated
+            # because a primary and a cross-sell search in the same turn will
+            # often both come back with the same shop-wide offer, and showing
+            # it twice reads as two different discounts.
+            for offer in result.get("offers", []):
+                offer_id = offer.get("id")
+                if offer_id and offer_id not in seen_offer_ids:
+                    seen_offer_ids.add(offer_id)
+                    offers.append(offer)
+
         elif tr.get("tool") == "ask_user":
             tool_options = result.get("options")
             if tool_options:
@@ -964,6 +1070,7 @@ def extract_structured_payload(tool_results: list[dict[str, Any]]) -> dict[str, 
         "form": form,
         "profile_dirty": profile_dirty,
         "cart": cart,
+        "offers": offers,
     }
 
 

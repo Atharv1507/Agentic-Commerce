@@ -8,6 +8,13 @@ load_dotenv()
 PERSONAL_AGENT_PORT = int(os.getenv("PERSONAL_AGENT_PORT", "8000"))
 OPENAI_MODEL = os.getenv("OPENAI_MODEL", "gpt-5-mini")
 SELLER_AGENT_URL = os.getenv("SELLER_AGENT_URL", "http://localhost:8001")
+
+# Credential this agent presents to the Seller Agent. The merchant uses it to
+# decide whether to deal with us at all, to scope our session namespace so it
+# can't collide with another buyer agent's, and to attribute the revenue we
+# bring to us specifically. Must match one of the merchant's BUYER_API_KEYS.
+SELLER_BUYER_KEY = os.getenv("SELLER_BUYER_KEY", "demo-personal-agent-key")
+SELLER_AUTH_HEADERS = {"X-Buyer-Key": SELLER_BUYER_KEY}
 SESSION_HISTORY_LIMIT = 20
 SESSIONS_FILE = Path("sessions.json")
 
