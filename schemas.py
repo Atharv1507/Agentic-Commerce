@@ -60,6 +60,10 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                         "type": "string",
                         "description": "'Men', 'Women' or 'Unisex'. Only set this when the shopper is shopping for someone else — their own gender comes from their profile and is applied automatically.",
                     },
+                    "size": {
+                        "type": "string",
+                        "description": "XS, S, M, L, XL or XXL. Only set this when the shopper names a DIFFERENT size from their own (shopping for someone else, or 'do you have this in XL?'). Their own size comes from their profile and is applied to every search automatically — do not pass it and do not ask for it.",
+                    },
                     "min_results": {
                         "type": "integer",
                         "description": "How many acceptable options to aim for (default 3).",
@@ -161,6 +165,37 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
     {
         "type": "function",
         "function": {
+            "name": "check_availability",
+            "description": (
+                "Check whether specific products already shown in this conversation are "
+                "in stock in a given size. Use this the moment the shopper asks about a "
+                "size for a particular item — 'do you have that one in large?', 'is the "
+                "blue one available in XL?', 'I want the second one in L'. It is an "
+                "exact stock lookup, not a search, and it shows no cards. Defaults to "
+                "every product currently on screen and to the shopper's own size. Do "
+                "NOT use find_products for this, and never answer a size question from "
+                "memory — the same product can be stocked in M and sold out in L."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_ids": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "IDs of the products being asked about, from the cards already shown. Omit to check everything currently on screen.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "XS, S, M, L, XL or XXL. Omit to use the shopper's own size from their profile.",
+                    },
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
             "name": "ask_user",
             "description": "Ask the user a clarifying question. Use when you need more information to formulate a query.",
             "parameters": {
@@ -177,6 +212,90 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                     },
                 },
                 "required": ["question"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "add_to_cart",
+            "description": (
+                "Put products the shopper agreed to into their cart, in the sizes they "
+                "asked for. Call this whenever they say to add something — 'add these', "
+                "'yes to those', 'the black one in L' — including several items in ONE "
+                "call. Only products already shown in this conversation can be added; use "
+                "the IDs from SESSION CONTEXT's on-screen listing. A size with no stock is "
+                "refused and reported back. Never claim something is in the cart without "
+                "calling this and seeing it in the returned cart."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "description": "One entry per product-and-size the shopper wants.",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "product_id": {
+                                    "type": "string",
+                                    "description": "ID of a product shown in this conversation.",
+                                },
+                                "size": {
+                                    "type": "string",
+                                    "description": "XS, S, M, L, XL or XXL. Omit to use the shopper's saved size.",
+                                },
+                                "quantity": {
+                                    "type": "integer",
+                                    "description": "Units to add. Defaults to 1.",
+                                },
+                            },
+                            "required": ["product_id"],
+                        },
+                    },
+                },
+                "required": ["items"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "update_cart",
+            "description": (
+                "Change a cart line the shopper asked you to change: swap its size, set "
+                "its quantity, or remove it. Use this when they answer a refused "
+                "checkout ('make it M then', 'drop that one', 'just one of those') or "
+                "ask for a cart change in conversation. A size with no stock is "
+                "rejected, and moving a line onto a size already in the cart merges "
+                "them. After changing it, call checkout_cart again if they were "
+                "mid-checkout."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "product_id": {
+                        "type": "string",
+                        "description": "ID of the product to change, from SESSION CONTEXT's cart listing.",
+                    },
+                    "size": {
+                        "type": "string",
+                        "description": "Which line, when the product is in the cart in more than one size. Omit when there's only one line for it.",
+                    },
+                    "new_size": {
+                        "type": "string",
+                        "description": "Size to move the line to: XS, S, M, L, XL or XXL.",
+                    },
+                    "quantity": {
+                        "type": "integer",
+                        "description": "New unit count for the line. 0 removes it.",
+                    },
+                    "remove": {
+                        "type": "boolean",
+                        "description": "True to drop the line entirely.",
+                    },
+                },
+                "required": ["product_id"],
             },
         },
     },
@@ -220,6 +339,7 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                     "address": {"type": "string", "description": "User's delivery address"},
                     "payment_method": {"type": "string", "description": "User's preferred payment method"},
                     "gender": {"type": "string", "description": "User's gender"},
+                    "size": {"type": "string", "description": "User's clothing size: XS, S, M, L, XL or XXL. Save it whenever they tell you ('I'm a large') — it then filters every future search."},
                 },
                 "required": [],
             },

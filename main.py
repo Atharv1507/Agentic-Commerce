@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import time
+from datetime import datetime
 from typing import Any, Callable, Optional
 
 from fastapi import FastAPI, HTTPException
@@ -23,7 +24,7 @@ from config import (
     MAX_TOOL_ITERATIONS,
 )
 from schemas import TOOLS_SCHEMA
-from context import durable_hints, normalize_gender
+from context import durable_hints, normalize_gender, normalize_size
 from handlers import PREFERENCE_FIELDS, execute_tool, extract_structured_payload
 
 logging.basicConfig(level=logging.INFO)
@@ -47,17 +48,69 @@ openai_client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
 
 
 def load_sessions() -> dict[str, Any]:
-    """Load sessions from JSON file."""
-    if SESSIONS_FILE.exists():
+    """Load the session store, surviving a file that isn't readable JSON.
+
+    An empty or half-written `sessions.json` used to raise straight out of
+    module import, so the service could not start at all — and the only way
+    back was to delete the file by hand, which is exactly the data the crash
+    was about. A store we can't parse is moved aside (so it can still be
+    inspected or salvaged) and startup continues from empty.
+    """
+    if not SESSIONS_FILE.exists():
+        return {}
+
+    try:
         with open(SESSIONS_FILE, "r") as f:
-            return json.load(f)
-    return {}
+            content = f.read().strip()
+        if not content:
+            logger.warning(f"{SESSIONS_FILE} is empty; starting with no sessions")
+            return {}
+        loaded = json.loads(content)
+    except (json.JSONDecodeError, OSError) as e:
+        quarantine = SESSIONS_FILE.with_suffix(
+            f".corrupt-{datetime.now():%Y%m%d-%H%M%S}.json"
+        )
+        try:
+            SESSIONS_FILE.rename(quarantine)
+            logger.error(f"{SESSIONS_FILE} is unreadable ({e}); moved to {quarantine}")
+        except OSError:
+            logger.error(f"{SESSIONS_FILE} is unreadable ({e}) and could not be moved aside")
+        return {}
+
+    if not isinstance(loaded, dict):
+        logger.error(f"{SESSIONS_FILE} holds {type(loaded).__name__}, not an object; ignoring it")
+        return {}
+    return loaded
 
 
 def save_sessions(sessions: dict[str, Any]) -> None:
-    """Save sessions to JSON file."""
-    with open(SESSIONS_FILE, "w") as f:
-        json.dump(sessions, f, indent=2)
+    """Write the session store atomically.
+
+    Serialised in full BEFORE the destination is touched, then swapped in with
+    a single rename. Writing directly into `sessions.json` truncates it the
+    instant it's opened, so anything that goes wrong between there and the
+    final flush — a crash, a kill, an encoding error partway through — leaves
+    an empty or half-written store with the previous contents already gone.
+    `os.replace` is atomic on POSIX, so a reader sees either the old file or
+    the new one, never a partial one.
+    """
+    try:
+        serialised = json.dumps(sessions, indent=2)
+    except (TypeError, ValueError) as e:
+        # Better to keep yesterday's store than to shred it over one bad value.
+        logger.error(f"Sessions are not serialisable ({e}); keeping the previous file")
+        return
+
+    tmp = SESSIONS_FILE.with_suffix(f".tmp-{os.getpid()}")
+    try:
+        with open(tmp, "w") as f:
+            f.write(serialised)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, SESSIONS_FILE)
+    except OSError as e:
+        logger.error(f"Could not save sessions: {e}")
+        tmp.unlink(missing_ok=True)
 
 
 sessions = load_sessions()
@@ -66,7 +119,8 @@ sessions = load_sessions()
 def build_session_context(session: dict[str, Any], thread: dict[str, Any]) -> str:
     """Render live state for the LLM, keeping the three kinds of state apart.
 
-    DETAILS are account-level facts about the person (address, phone, gender).
+    DETAILS are account-level facts about the person (address, phone, gender,
+    size).
     PREFERENCES are account-level taste — a soft hint, never a filter. THIS
     CONVERSATION holds what is being shopped for right now, which is the only
     scope a fabric, a colour-for-this-garment or a budget belongs to.
@@ -98,6 +152,19 @@ def build_session_context(session: dict[str, Any], thread: dict[str, Any]) -> st
             f"you do not need to pass it, and you must not ask about it."
         )
 
+    size = normalize_size(session.get("user", {}).get("size"))
+    if size:
+        lines.append(
+            f"Size for search: {size}. Applied to every search automatically as a hard "
+            f"filter, so everything you show can be worn. Do not pass it and do not ask "
+            f"about it. Pass `size` only when they name a different one."
+        )
+    else:
+        lines.append(
+            "Size: not known. Searches are unfiltered by size, so a product may turn out "
+            "not to come in theirs. If they mention their size, save it with update_profile."
+        )
+
     if preferences:
         lines.append(
             f"Saved preferences (account-level taste, a SOFT default only): {json.dumps(preferences)}. "
@@ -118,7 +185,42 @@ def build_session_context(session: dict[str, Any], thread: dict[str, Any]) -> st
               "not mention the old product, and do not report a shortfall about it."
         )
 
-    lines.append(f"Current cart: {json.dumps(cart) if cart else 'empty'}")
+    # Named with IDs so a follow-up about "the second one" or "the blue one"
+    # can be turned into a check_availability call instead of a guess.
+    on_screen = thread.get("last_shown") or []
+    if on_screen:
+        listed = "; ".join(
+            f"{i}. {item.get('name')} ({item.get('brand')}) [{item['id']}]"
+            for i, item in enumerate(on_screen, start=1)
+        )
+        lines.append(
+            f"Products currently on screen, in the order shown: {listed}. Use these IDs "
+            f"when the shopper refers to one of them — e.g. check_availability for a "
+            f"size question about a specific item."
+        )
+
+    # Rendered field by field rather than json.dumps(cart): a cart item is a
+    # whole product dict, and `image` is a multi-kilobyte data URI. Dumping it
+    # raw spent most of the context window on base64 and buried the fields that
+    # matter — which size each line is, and how many of it.
+    if cart:
+        rendered = "; ".join(
+            f"{item.get('name')} [{item.get('id')}] size {item.get('size') or 'not set'} "
+            f"x{item.get('quantity', 1)} @ Rs{item.get('price')}"
+            + (
+                f" (in stock: {', '.join(s for s, n in (item.get('sizes') or {}).items() if n > 0)})"
+                if item.get("sizes")
+                else ""
+            )
+            for item in cart
+        )
+        lines.append(
+            f"Current cart, one entry per line — the SAME product in two sizes is two "
+            f"separate lines: {rendered}. Use update_cart with the product ID (and the "
+            f"size, when a product appears more than once) to change or remove one."
+        )
+    else:
+        lines.append("Current cart: empty")
     if seen_count:
         lines.append(
             f"{seen_count} product(s) have already been shown in this conversation; "
@@ -267,6 +369,12 @@ def run_chat_turn(
         # Settings reflect it without the shopper re-typing anything.
         payload["profile"] = session.get("user", {})
         payload["preferences"] = durable_hints(session.get("preferences") or {})
+    if structured["cart"] is not None:
+        # The agent changed the cart this turn (a size swap after a refused
+        # checkout, usually). The frontend keeps its own copy for instant
+        # add/remove, so hand back the authoritative one rather than letting
+        # the two drift.
+        payload["cart"] = structured["cart"]
     return payload
 
 
@@ -279,6 +387,9 @@ class OnboardingRequest(BaseModel):
     gender: str
     payment_method: str
     name: Optional[str] = None
+    # Optional so an older client (or a curl call) that predates the size step
+    # still onboards, rather than 422-ing on a field it doesn't know about.
+    size: Optional[str] = None
 
 
 class ChatRequest(BaseModel):
@@ -318,6 +429,7 @@ async def onboarding(request: OnboardingRequest) -> dict[str, Any]:
         "gender": request.gender,
         "payment_method": request.payment_method,
         "gender_normalized": normalize_gender(request.gender),
+        "size": normalize_size(request.size) or "",
     }
     if request.name:
         details["name"] = request.name
@@ -476,14 +588,22 @@ async def delete_preferences(email: str) -> dict[str, Any]:
     return {"status": "ok", "preferences": {}}
 
 
+# A cart line is identified by (product, size), not by product alone: the same
+# shirt in M and in L are two different things to pick, price and ship, and
+# collapsing them onto one line makes the second add silently overwrite the
+# first size the shopper chose.
+def _same_line(entry: dict[str, Any], product_id: str, size: Optional[str]) -> bool:
+    return entry.get("id") == product_id and (entry.get("size") or None) == (size or None)
+
+
 @app.post("/cart/{email}")
 async def add_to_cart(email: str, item: dict[str, Any]) -> dict[str, Any]:
-    """Add a product to the user's session cart, or bump its quantity.
+    """Add a product to the user's session cart, or bump an existing line.
 
     Args:
         email: User's email address.
         item: Product dict (id, name, brand, price, color, gender,
-            description, optional quantity — defaults to 1).
+            description, sizes, optional size and quantity).
 
     Returns:
         Dict with the updated cart.
@@ -495,27 +615,46 @@ async def add_to_cart(email: str, item: dict[str, Any]) -> dict[str, Any]:
 
     session = sessions[email]
     cart = session["cart"]
+    size = normalize_size(item.get("size"))
+    if size:
+        item["size"] = size
 
-    existing = next((entry for entry in cart if entry.get("id") == item.get("id")), None)
+    existing = next((entry for entry in cart if _same_line(entry, item.get("id"), size)), None)
     if existing:
         existing["quantity"] = existing.get("quantity", 1) + item.get("quantity", 1)
+        # Refresh the availability map on the way through — the line may have
+        # been added before the shopper's size was known.
+        if item.get("sizes"):
+            existing["sizes"] = item["sizes"]
     else:
         item.setdefault("quantity", 1)
         cart.append(item)
 
     save_sessions(sessions)
-    logger.info(f"Cart updated for {email}: added {item.get('id')}")
+    logger.info(f"Cart updated for {email}: added {item.get('id')} size={size or '-'}")
 
     return {"status": "ok", "cart": cart}
 
 
-@app.delete("/cart/{email}/{product_id}")
-async def remove_from_cart(email: str, product_id: str) -> dict[str, Any]:
-    """Remove a product from the user's session cart.
+class CartSizeRequest(BaseModel):
+    """Request model for changing a cart line's size."""
+
+    product_id: str
+    size: Optional[str] = None
+    new_size: str
+
+
+@app.patch("/cart/{email}/size")
+async def change_cart_size(email: str, request: CartSizeRequest) -> dict[str, Any]:
+    """Move a cart line to a different size, merging if that line already exists.
+
+    Merging matters: picking L on a line when an L line is already in the cart
+    should end with one line of two, not two lines the shopper has to reconcile
+    at checkout.
 
     Args:
         email: User's email address.
-        product_id: ID of the product to remove.
+        request: The product, its current size, and the size to move it to.
 
     Returns:
         Dict with the updated cart.
@@ -526,10 +665,63 @@ async def remove_from_cart(email: str, product_id: str) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail="Session not found")
 
     session = sessions[email]
-    session["cart"] = [entry for entry in session["cart"] if entry.get("id") != product_id]
+    cart = session["cart"]
+    from_size = normalize_size(request.size)
+    to_size = normalize_size(request.new_size)
+    if not to_size:
+        raise HTTPException(status_code=400, detail=f"Unknown size: {request.new_size}")
+
+    line = next((e for e in cart if _same_line(e, request.product_id, from_size)), None)
+    if not line:
+        raise HTTPException(status_code=404, detail="Cart line not found")
+
+    stocked = (line.get("sizes") or {}).get(to_size)
+    if stocked is not None and stocked <= 0:
+        raise HTTPException(status_code=409, detail=f"Out of stock in {to_size}")
+
+    target = next((e for e in cart if _same_line(e, request.product_id, to_size)), None)
+    if target and target is not line:
+        target["quantity"] = target.get("quantity", 1) + line.get("quantity", 1)
+        cart.remove(line)
+    else:
+        line["size"] = to_size
 
     save_sessions(sessions)
-    logger.info(f"Cart updated for {email}: removed {product_id}")
+    logger.info(f"Cart size changed for {email}: {request.product_id} {from_size}->{to_size}")
+
+    return {"status": "ok", "cart": cart}
+
+
+@app.delete("/cart/{email}/{product_id}")
+async def remove_from_cart(
+    email: str, product_id: str, size: Optional[str] = None
+) -> dict[str, Any]:
+    """Remove a cart line, or every line for a product when no size is given.
+
+    Args:
+        email: User's email address.
+        product_id: ID of the product to remove.
+        size: Which size line to drop. Omitted removes all sizes of it, which
+            is what an older client (and the "remove this product" affordance
+            on a card) means.
+
+    Returns:
+        Dict with the updated cart.
+    """
+    email = email.lower()
+
+    if email not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    session = sessions[email]
+    wanted = normalize_size(size)
+    if wanted:
+        session["cart"] = [e for e in session["cart"] if not _same_line(e, product_id, wanted)]
+    else:
+        session["cart"] = [e for e in session["cart"] if e.get("id") != product_id]
+
+    save_sessions(sessions)
+    logger.info(f"Cart updated for {email}: removed {product_id} size={wanted or 'all'}")
 
     return {"status": "ok", "cart": session["cart"]}
 

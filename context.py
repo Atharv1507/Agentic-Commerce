@@ -4,8 +4,10 @@ Three separate kinds of state used to be conflated into one durable, global
 `preferences` blob, which is why a fabric mentioned once outlived the request
 it belonged to:
 
-1. USER DETAILS (email, phone, address, gender) — durable, account-level,
-   editable in Settings. Never a search filter, except gender.
+1. USER DETAILS (email, phone, address, gender, size) — durable, account-level,
+   editable in Settings. Never a search filter, except gender and size, which
+   describe the shopper's body rather than their taste and so apply to every
+   search without being restated.
 2. DURABLE PREFERENCES (colours, brands, style, spend tier) — account-level
    taste. A soft hint, never a hard filter, and always overridable.
 3. SEARCH CONSTRAINTS for the thing being shopped for RIGHT NOW (fabric,
@@ -116,6 +118,10 @@ NO_PREFERENCE_PATTERNS = [
 
 # Constraints that describe the *thing being bought* rather than the shopper.
 # These are the ones that must not outlive their subject.
+# `size` is deliberately NOT here. It describes the shopper, not the garment,
+# so it survives a change of subject and a "no preference" alike — someone who
+# wears L still wears L when they move from shirts to tees, and "surprise me"
+# is never an invitation to send something that doesn't fit.
 SOFT_CONSTRAINT_KEYS = ("materials", "colors", "brands")
 BUDGET_KEYS = ("budget", "budget_min", "budget_max", "budget_flexible", "premium")
 
@@ -229,6 +235,36 @@ def normalize_gender(value: Optional[str]) -> Optional[str]:
     if lowered in ("unisex", "any", "all"):
         return "Unisex"
     return None
+
+
+# Every spelling of a size that has to land on the catalogue's key. Mirrors the
+# seller's `canonical_size` and, like MATERIAL_TOKENS above, is kept local: the
+# shopper's own size must resolve even when the seller service is down.
+_SIZE_ALIASES = {
+    "xs": "XS", "extrasmall": "XS", "extra small": "XS", "xsmall": "XS",
+    "s": "S", "small": "S",
+    "m": "M", "medium": "M", "med": "M",
+    "l": "L", "large": "L", "lrg": "L",
+    "xl": "XL", "extralarge": "XL", "extra large": "XL", "xlarge": "XL",
+    "xxl": "XXL", "2xl": "XXL", "double xl": "XXL", "doublexl": "XXL",
+    "xxlarge": "XXL", "extra extra large": "XXL",
+}
+
+SIZES = ("XS", "S", "M", "L", "XL", "XXL")
+
+
+def normalize_size(value: Optional[str]) -> Optional[str]:
+    """Map a profile or stated size onto the catalogue's vocabulary.
+
+    None for anything unrecognised, which the callers read as "no size filter".
+    Guessing would be worse than not filtering: a wrong size hides the whole
+    catalogue behind a constraint the shopper never set.
+    """
+    if not value:
+        return None
+    cleaned = str(value).strip().lower().replace("-", " ")
+    cleaned = re.sub(r"\bsizes?\b", "", cleaned).strip()
+    return _SIZE_ALIASES.get(cleaned) or _SIZE_ALIASES.get(cleaned.replace(" ", ""))
 
 
 def durable_hints(preferences: dict[str, Any]) -> dict[str, Any]:

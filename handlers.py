@@ -9,9 +9,10 @@ from context import (
     durable_hints,
     expresses_no_preference,
     normalize_gender,
+    normalize_size,
     scrub_constraints,
 )
-from negotiation import find_products, fetch_facets
+from negotiation import check_sizes, find_products, fetch_facets
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -173,6 +174,361 @@ def list_options(
     }
 
 
+def check_availability(
+    arguments: dict[str, Any], session: dict[str, Any], thread: dict[str, Any]
+) -> dict[str, Any]:
+    """Answer "is THIS one available in <size>?" for products already on screen.
+
+    Search filters by size, so everything shown fits — but that only covers the
+    case where the shopper's size was known in advance. The far more common
+    exchange is the shopper pointing at a card and naming a size: "do you have
+    that one in large?". There is no search to run there; the answer is a stock
+    lookup on one product, and it must be exact, so this goes straight to the
+    seller's `/stock` endpoint rather than through its LLM.
+
+    Args:
+        arguments: `size` (defaults to the shopper's own) and optional
+            `product_ids` (defaults to everything currently on screen).
+        session: The shopper's account-level session, for their saved size.
+        thread: The active conversation, for what was last shown.
+
+    Returns:
+        Per-product availability plus an explicit instruction for the
+        unavailable ones — the model has to say "not in your size", not fold it
+        into a vague "couldn't find anything".
+    """
+    on_screen = thread.get("last_shown") or []
+    names = {item["id"]: item.get("name") for item in on_screen}
+
+    product_ids = [pid for pid in (arguments.get("product_ids") or []) if pid]
+    if not product_ids:
+        product_ids = [item["id"] for item in on_screen]
+    if not product_ids:
+        return {
+            "error": "no_products",
+            "message": (
+                "Nothing has been shown in this conversation yet, so there is no product "
+                "to check. Search first, or ask which item they mean."
+            ),
+        }
+
+    size = normalize_size(arguments.get("size") or session.get("user", {}).get("size"))
+    if not size:
+        return {
+            "error": "no_size",
+            "message": (
+                "No size to check against. Ask the shopper which size they wear, then "
+                "save it with update_profile."
+            ),
+        }
+
+    stock = check_sizes(product_ids, size)
+    if not stock:
+        return {"error": "seller_unreachable", "size": size}
+
+    by_id = stock.get("products") or {}
+    available, unavailable = [], []
+    for pid in product_ids:
+        report = by_id.get(pid) or {}
+        entry = {
+            "id": pid,
+            "name": report.get("name") or names.get(pid) or pid,
+            "count": report.get("requested_size_count", 0),
+            "available_sizes": report.get("available_sizes") or [],
+        }
+        (available if report.get("in_stock") else unavailable).append(entry)
+
+    result: dict[str, Any] = {
+        "size": size,
+        "available": available,
+        "unavailable": unavailable,
+    }
+
+    if unavailable:
+        listed = "; ".join(
+            f"{item['name']} (in stock in {', '.join(item['available_sizes'])})"
+            if item["available_sizes"]
+            else f"{item['name']} (sold out in every size)"
+            for item in unavailable
+        )
+        result["note"] = (
+            f"NOT available in {size}: {listed}. Say this plainly — name the item and the "
+            f"sizes it does come in, and offer either a different size or to find "
+            f"something similar that comes in {size}. Do not describe it as out of stock "
+            f"generally, and do not add it to an order."
+        )
+    if available:
+        low = [item for item in available if item["count"] <= 2]
+        if low:
+            result["low_stock_note"] = (
+                "Running low: "
+                + ", ".join(f"{item['name']} ({item['count']} left in {size})" for item in low)
+            )
+
+    logger.info(f"Availability check size={size}: {len(available)} yes, {len(unavailable)} no")
+    return result
+
+
+def _cart_line(cart: list[dict[str, Any]], product_id: str, size: Optional[str]):
+    """The cart line for a product in a size, or the only line for it.
+
+    Falling back to "the only line" matters because the shopper rarely says a
+    size when there's no ambiguity: "drop the blue shirt" should work when
+    that shirt is in the cart exactly once.
+    """
+    if size:
+        match = next(
+            (e for e in cart if e.get("id") == product_id and normalize_size(e.get("size")) == size),
+            None,
+        )
+        if match:
+            return match
+    lines = [e for e in cart if e.get("id") == product_id]
+    return lines[0] if len(lines) == 1 else None
+
+
+def add_to_cart(
+    arguments: dict[str, Any], session: dict[str, Any], thread: dict[str, Any]
+) -> dict[str, Any]:
+    """Put products the shopper agreed to onto the cart, in the sizes they named.
+
+    The cart used to be the frontend's alone, so "yes, add those three" left the
+    agent with nothing to call: it said it had added them, the cart stayed
+    empty, and the shopper's next screen disagreed with the last thing they were
+    told. Adding is a normal part of the conversation, so it gets a tool.
+
+    Product records come from what was actually shown in THIS conversation
+    (`shown_catalog`), never from the model — a cart line carries a price, a
+    stocked-size map and an image, and none of those may be invented. A size
+    with no stock is refused here exactly as it is at checkout, so an unbuyable
+    line can't be created in the first place.
+
+    Args:
+        arguments: `items`, a list of `{product_id, size?, quantity?}`. A single
+            `product_id`/`size`/`quantity` at the top level is also accepted.
+        session: The shopper's account-level session (holds "cart" and their size).
+        thread: The active conversation, for the products it has shown.
+
+    Returns:
+        Dict with the updated cart plus `added` and `rejected` lists, so the
+        reply can name anything that didn't go in and why.
+    """
+    cart = session.setdefault("cart", [])
+    catalog = thread.get("shown_catalog") or {}
+    default_size = normalize_size(session.get("user", {}).get("size"))
+
+    items = arguments.get("items")
+    if not items:
+        if arguments.get("product_id"):
+            items = [
+                {
+                    "product_id": arguments["product_id"],
+                    "size": arguments.get("size"),
+                    "quantity": arguments.get("quantity"),
+                }
+            ]
+        else:
+            return {
+                "error": "no_items",
+                "message": "Say which product IDs to add, from the products currently on screen.",
+            }
+
+    added: list[dict[str, Any]] = []
+    rejected: list[dict[str, Any]] = []
+
+    for item in items:
+        product_id = (item or {}).get("product_id")
+        product = catalog.get(product_id)
+        if not product:
+            rejected.append(
+                {
+                    "product_id": product_id,
+                    "reason": "not_shown",
+                    "message": (
+                        f"{product_id} has not been shown in this conversation, so it cannot "
+                        f"be added. Search for it first, then add it from the results."
+                    ),
+                }
+            )
+            continue
+
+        sizes = product.get("sizes") or {}
+        size = normalize_size(item.get("size")) or default_size
+        if not size:
+            rejected.append(
+                {
+                    "product_id": product_id,
+                    "name": product.get("name"),
+                    "reason": "no_size",
+                    "available_sizes": [s for s, n in sizes.items() if n > 0],
+                    "message": (
+                        f"No size given for {product.get('name')} and none saved on the "
+                        f"profile. Ask which size they wear."
+                    ),
+                }
+            )
+            continue
+
+        stocked = sizes.get(size)
+        if stocked is not None and stocked <= 0:
+            rejected.append(
+                {
+                    "product_id": product_id,
+                    "name": product.get("name"),
+                    "reason": "size_out_of_stock",
+                    "requested_size": size,
+                    "available_sizes": [s for s, n in sizes.items() if n > 0],
+                    "message": (
+                        f"{product.get('name')} is not stocked in {size}, so it was not "
+                        f"added. Offer the sizes it does come in."
+                    ),
+                }
+            )
+            continue
+
+        quantity = int(item.get("quantity") or 1)
+        if quantity < 1:
+            quantity = 1
+
+        existing = _cart_line_exact(cart, product_id, size)
+        if existing:
+            existing["quantity"] = existing.get("quantity", 1) + quantity
+            line = existing
+        else:
+            line = {**product, "size": size, "quantity": quantity}
+            cart.append(line)
+
+        added.append(
+            {
+                "product_id": product_id,
+                "name": product.get("name"),
+                "size": size,
+                "quantity": line.get("quantity", 1),
+                "price": product.get("price"),
+            }
+        )
+
+    logger.info(f"Cart add: {len(added)} added, {len(rejected)} rejected")
+
+    result: dict[str, Any] = {
+        "status": "ok" if added else "nothing_added",
+        # `cart_updated` is what tells the frontend to replace its own copy, so
+        # the cart button appears the moment the agent adds something. Sent even
+        # when nothing went in is wrong — it would blank a cart the UI has.
+        "cart": cart,
+        "added": added,
+        "rejected": rejected,
+    }
+    if added:
+        result["cart_updated"] = True
+        result["note"] = (
+            "Added. Confirm what went in with the size for each line, then ask whether "
+            "they want to check out or keep looking. Do not call checkout_cart unless "
+            "they ask for it."
+        )
+    return result
+
+
+def _cart_line_exact(cart: list[dict[str, Any]], product_id: str, size: Optional[str]):
+    """The cart line for exactly this product in exactly this size, or None.
+
+    Distinct from `_cart_line`, which falls back to "the only line for it" so a
+    shopper can say "drop the blue shirt" without a size. That fallback is
+    wrong when ADDING: the same shirt in M and in L are two lines, and matching
+    loosely would silently bump the M when the shopper asked for an L.
+    """
+    return next(
+        (
+            e
+            for e in cart
+            if e.get("id") == product_id and normalize_size(e.get("size")) == size
+        ),
+        None,
+    )
+
+
+def update_cart(arguments: dict[str, Any], session: dict[str, Any]) -> dict[str, Any]:
+    """Change a cart line's size or quantity, or remove it, on the shopper's say-so.
+
+    Checkout can refuse a line — wrong size, not enough units — and the reply
+    that follows is almost always "make it M then". Without this the agent has
+    to send the shopper to the cart UI to do something it was just asked to do,
+    which reads as a refusal. The same guard as the UI applies: a size with no
+    stock cannot be selected here either.
+
+    Args:
+        arguments: `product_id`, optional `size` (which line), and any of
+            `new_size`, `quantity`, `remove`.
+        session: Current user session (contains "cart").
+
+    Returns:
+        Dict with the updated cart, or an error naming what went wrong.
+    """
+    cart = session.setdefault("cart", [])
+    product_id = arguments.get("product_id")
+    line = _cart_line(cart, product_id, normalize_size(arguments.get("size")))
+
+    if not line:
+        return {
+            "error": "line_not_found",
+            "cart": cart,
+            "message": (
+                "No single cart line matches. If the product is in the cart in more than "
+                "one size, say which size to change."
+            ),
+        }
+
+    if arguments.get("remove"):
+        cart.remove(line)
+        logger.info(f"Cart line removed: {product_id}")
+        return {"status": "ok", "cart": cart, "cart_updated": True, "removed": product_id}
+
+    new_size = normalize_size(arguments.get("new_size"))
+    if new_size:
+        stocked = (line.get("sizes") or {}).get(new_size)
+        if stocked is not None and stocked <= 0:
+            return {
+                "error": "size_out_of_stock",
+                "cart": cart,
+                "requested_size": new_size,
+                "available_sizes": [
+                    size for size, n in (line.get("sizes") or {}).items() if n > 0
+                ],
+                "message": (
+                    f"{line.get('name')} is not stocked in {new_size}, so the cart was not "
+                    f"changed. Offer the sizes it does come in."
+                ),
+            }
+        # Merge rather than leave two lines the shopper has to reconcile later.
+        target = next(
+            (
+                e
+                for e in cart
+                if e is not line
+                and e.get("id") == product_id
+                and normalize_size(e.get("size")) == new_size
+            ),
+            None,
+        )
+        if target:
+            target["quantity"] = target.get("quantity", 1) + line.get("quantity", 1)
+            cart.remove(line)
+            line = target
+        else:
+            line["size"] = new_size
+
+    quantity = arguments.get("quantity")
+    if quantity is not None:
+        quantity = int(quantity)
+        if quantity <= 0:
+            cart.remove(line)
+            return {"status": "ok", "cart": cart, "cart_updated": True, "removed": product_id}
+        line["quantity"] = quantity
+
+    logger.info(f"Cart line updated: {product_id} -> size={line.get('size')} x{line.get('quantity')}")
+    return {"status": "ok", "cart": cart, "cart_updated": True, "line": line}
+
+
 def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
     """Create a Razorpay order for the user's current session cart.
 
@@ -184,8 +540,8 @@ def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
 
     Returns:
         Dict with order details, or an "error" key describing why checkout
-        could not proceed (empty cart, missing buyer info, or a Razorpay
-        failure).
+        could not proceed (empty cart, missing buyer info, a line that can't
+        ship in the size it was ordered in, or a Razorpay failure).
     """
     user = session.get("user", {})
     cart = session.get("cart", [])
@@ -199,6 +555,58 @@ def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
         return {"error": "missing_buyer_info", "missing": missing}
 
     product_ids = [item["id"] for item in cart]
+
+    # Last word on whether this can actually ship. Each line is checked in ITS
+    # OWN size — the cart can legitimately hold the same shirt in M and in L,
+    # and validating both against one size would clear a line that can't ship
+    # while blocking one that can. Quantity is checked too: 3 ordered against 2
+    # in stock is the same failure, one step later.
+    default_size = normalize_size(user.get("size"))
+    by_size: dict[str, list[dict[str, Any]]] = {}
+    for item in cart:
+        size = normalize_size(item.get("size")) or default_size
+        if size:
+            by_size.setdefault(size, []).append(item)
+
+    blocked: list[dict[str, Any]] = []
+    for size, items in by_size.items():
+        stock = check_sizes([i["id"] for i in items], size)
+        if not stock:
+            # Seller unreachable. Unknown is not the same as unavailable, and
+            # blocking checkout on a failed health check is the worse error.
+            continue
+        reports = stock.get("products") or {}
+        for item in items:
+            report = reports.get(item["id"]) or {}
+            in_stock = report.get("requested_size_count", 0)
+            wanted = item.get("quantity", 1)
+            if report.get("in_stock") and in_stock >= wanted:
+                continue
+            blocked.append(
+                {
+                    "id": item["id"],
+                    "name": report.get("name") or item.get("name") or item["id"],
+                    "size": size,
+                    "quantity": wanted,
+                    "in_stock": in_stock,
+                    "available_sizes": report.get("available_sizes") or [],
+                    "reason": "out_of_stock" if in_stock == 0 else "insufficient_quantity",
+                }
+            )
+
+    if blocked:
+        return {
+            "error": "size_unavailable",
+            "items": blocked,
+            "message": (
+                "Some lines cannot ship as ordered. For each one, tell the shopper the "
+                "item, the size they picked, and why — either it is not stocked in that "
+                "size (name the sizes it IS in) or there aren't enough units left. Ask "
+                "them to change the size or reduce the quantity in the cart. Do not "
+                "retry checkout unchanged."
+            ),
+        }
+
     amount = sum(item["price"] * item.get("quantity", 1) for item in cart)
 
     try:
@@ -215,9 +623,29 @@ def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
 
         return {
             "order_id": order["id"],
+            # Razorpay works in paise and the frontend passes `amount` straight
+            # to the checkout SDK, so it has to stay in paise. The model reads
+            # this dict too and was quoting the paise figure as rupees — two
+            # ₹1,049 shirts came back as "₹209,800". `amount_inr` is the one to
+            # say out loud, and the note is here because a bare pair of numbers
+            # is exactly the ambiguity that caused the bug.
             "amount": order["amount"],
+            "amount_inr": order["amount"] // 100,
+            "amount_note": (
+                f"Quote ₹{order['amount'] // 100:,} to the shopper. `amount` is in paise "
+                f"for the payment SDK — never state it as rupees."
+            ),
             "currency": order["currency"],
             "product_ids": product_ids,
+            "lines": [
+                {
+                    "id": item["id"],
+                    "name": item.get("name"),
+                    "size": normalize_size(item.get("size")) or default_size,
+                    "quantity": item.get("quantity", 1),
+                }
+                for item in cart
+            ],
             "buyer": {
                 "name": user.get("name", ""),
                 "email": user.get("email", ""),
@@ -240,7 +668,7 @@ def update_profile(arguments: dict[str, Any], session: dict[str, Any]) -> dict[s
     they type into the chat show up in their profile without being re-entered.
 
     Args:
-        arguments: Any of name/email/phone/address/payment_method/gender.
+        arguments: Any of name/email/phone/address/payment_method/gender/size.
         session: Current user session (contains "user").
 
     Returns:
@@ -248,13 +676,17 @@ def update_profile(arguments: dict[str, Any], session: dict[str, Any]) -> dict[s
     """
     user = session.setdefault("user", {})
 
-    for field in ("name", "email", "phone", "address", "payment_method", "gender"):
+    for field in ("name", "email", "phone", "address", "payment_method", "gender", "size"):
         value = arguments.get(field)
         if value:
             user[field] = value
 
     if arguments.get("gender"):
         user["gender_normalized"] = normalize_gender(arguments["gender"])
+    if arguments.get("size"):
+        # Stored normalised so every later search compares against the
+        # catalogue's own key rather than whatever the shopper typed.
+        user["size"] = normalize_size(arguments["size"]) or arguments["size"]
 
     logger.info(f"Profile updated for {user.get('email', 'unknown')}: {list(arguments.keys())}")
     # `profile_updated` is what tells the frontend to refresh Settings from the
@@ -369,6 +801,8 @@ def verify_payment(order_id: str, payment_id: Optional[str] = None) -> dict[str,
                 "payment_id": payment_id,
                 "status": payment["status"],
                 "amount": payment["amount"],
+                "amount_inr": payment["amount"] // 100,
+                "amount_note": f"Quote ₹{payment['amount'] // 100:,} — `amount` is in paise.",
             }
 
         order = razorpay_client.order.fetch(order_id)
@@ -377,6 +811,8 @@ def verify_payment(order_id: str, payment_id: Optional[str] = None) -> dict[str,
             "order_id": order["id"],
             "status": order["status"],
             "amount": order["amount"],
+            "amount_inr": order["amount"] // 100,
+            "amount_note": f"Quote ₹{order['amount'] // 100:,} — `amount` is in paise.",
         }
     except Exception as e:
         logger.error(f"Payment verification error: {e}")
@@ -396,9 +832,10 @@ def extract_structured_payload(tool_results: list[dict[str, Any]]) -> dict[str, 
 
     Returns:
         Dict with `products`, `complements`, `options`, `form` (the clarifying
-        modal spec, or None) and `profile_dirty` — a flag telling the frontend
+        modal spec, or None), `profile_dirty` — a flag telling the frontend
         that details or preferences changed mid-chat and Settings should be
-        refreshed from the server.
+        refreshed — and `cart`, present only when the agent changed it, so the
+        frontend can replace its own copy instead of drifting out of sync.
     """
     products: list[dict[str, Any]] = []
     complements: list[dict[str, Any]] = []
@@ -406,12 +843,16 @@ def extract_structured_payload(tool_results: list[dict[str, Any]]) -> dict[str, 
     options: Optional[list[str]] = None
     form: Optional[dict[str, Any]] = None
     profile_dirty = False
+    cart: Optional[list[dict[str, Any]]] = None
 
     for tr in tool_results:
         result = tr.get("result") or {}
 
         if result.get("profile_updated") or result.get("preferences_updated"):
             profile_dirty = True
+
+        if result.get("cart_updated"):
+            cart = result.get("cart")
 
         if tr.get("tool") == "ask_preferences":
             if result.get("type") == "preference_form":
@@ -436,6 +877,7 @@ def extract_structured_payload(tool_results: list[dict[str, Any]]) -> dict[str, 
         "options": options,
         "form": form,
         "profile_dirty": profile_dirty,
+        "cart": cart,
     }
 
 
@@ -453,9 +895,11 @@ def _prepare_search(
     1. Stale constraints are stripped (`scrub_constraints`) — a fabric or colour
        from the last product type can't survive into a new one unless the
        shopper repeated it.
-    2. Gender is filled in from the profile. The shopper's gender is a detail,
-       not a preference, and every search should respect it without being told
-       to each turn. "Other" resolves to no filter rather than a guess.
+    2. Gender and size are filled in from the profile. Both are details, not
+       preferences, and every search should respect them without being told to
+       each turn. Neither is guessed: an unrecognised value resolves to no
+       filter, because showing the whole catalogue beats hiding it behind a
+       constraint the shopper never set.
     """
     constraints, notes = scrub_constraints(arguments, thread, turn_text)
 
@@ -473,6 +917,16 @@ def _prepare_search(
         constraints["gender"] = gender
     else:
         constraints.pop("gender", None)
+
+    # An explicit size in the tool call wins — that's the shopper buying for
+    # someone else. Otherwise their own size applies, and it is never dropped
+    # by scrubbing or by "no preference": a garment that doesn't fit is not a
+    # result no matter how relaxed the rest of the ask becomes.
+    size = normalize_size(constraints.get("size") or session.get("user", {}).get("size"))
+    if size:
+        constraints["size"] = size
+    else:
+        constraints.pop("size", None)
 
     return constraints, notes
 
@@ -523,8 +977,15 @@ def execute_tool(
     if tool_name == "list_options":
         return list_options(arguments, session)
 
+    if tool_name == "check_availability":
+        return check_availability(arguments, session, thread)
+
     if tool_name == "ask_user":
         return ask_user(arguments["question"], arguments.get("options"))
+    if tool_name == "add_to_cart":
+        return add_to_cart(arguments, session, thread)
+    if tool_name == "update_cart":
+        return update_cart(arguments, session)
     if tool_name == "checkout_cart":
         return checkout_cart(session)
     if tool_name == "update_profile":

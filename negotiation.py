@@ -80,6 +80,12 @@ for _a, _b in ADJACENT_COLORS:
 # across a realistic session without the session file growing without bound.
 SEEN_PRODUCTS_MEMORY = 60
 
+# Cap on how many FULL product records we keep per conversation. `last_shown`
+# only holds id/name/brand, which is enough to talk about a card but not enough
+# to put one in the cart — a cart line needs the price, the stocked sizes and
+# the image. Kept smaller than the ID memory because these records are fat.
+SHOWN_CATALOG_MEMORY = 24
+
 
 # Words that say nothing about what kind of product something is, so they must
 # not be what makes a complement look like a duplicate of the primary item.
@@ -175,6 +181,34 @@ def fetch_facets(
             return response.json()
     except Exception as e:
         logger.error(f"Facet lookup failed: {e}")
+        return {}
+
+
+def check_sizes(product_ids: list[str], size: Optional[str]) -> dict[str, Any]:
+    """Ask the seller, exactly and without an LLM, whether these can ship in `size`.
+
+    Used at checkout. Search already filters by size, but a cart can be built
+    from cards that were shown before the shopper's size was known, or added
+    from the sidebar — so the last word on "can this actually be sent" is taken
+    here rather than assumed.
+
+    Returns:
+        The seller's stock report, or `{}` when it can't be reached. An empty
+        dict means "unknown", and the caller lets the order through: blocking
+        checkout because a health check failed is the worse error.
+    """
+    if not product_ids or not size:
+        return {}
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.post(
+                f"{SELLER_AGENT_URL}/stock",
+                json={"product_ids": product_ids, "size": size},
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Stock check failed: {e}")
         return {}
 
 
@@ -289,6 +323,14 @@ def evaluate_product(
     if wanted_gender and actual_gender not in (wanted_gender, "unisex"):
         problems.append("wrong_gender")
 
+    wanted_size = constraints.get("size")
+    if wanted_size:
+        # Absent `available_sizes` means the seller didn't say, and an unproven
+        # miss is not a miss — the checkout probe is the backstop for that.
+        stocked = product.get("available_sizes")
+        if stocked is not None and wanted_size not in stocked:
+            problems.append("size_unavailable")
+
     wanted_colors = [c for c in (constraints.get("colors") or []) if c]
     if wanted_colors and band["require_color"]:
         actual = _canonical_color(product.get("color", ""))
@@ -329,6 +371,11 @@ def _describe_rejections(
         notes.append(f"{count(len(tally['wrong_color']))} the wrong colour ({', '.join(colors)})")
     if "wrong_gender" in tally:
         notes.append(f"{count(len(tally['wrong_gender']))} for the wrong gender")
+    if "size_unavailable" in tally:
+        notes.append(
+            f"{count(len(tally['size_unavailable']))} not stocked in the buyer's size — "
+            f"pass `size` to search_catalog so unwearable items never come back"
+        )
 
     return "; ".join(notes) + "."
 
@@ -395,6 +442,14 @@ def build_brief(
 
     if constraints.get("gender"):
         lines.append(f"Gender: {constraints['gender']} (Unisex is fine too).")
+
+    if constraints.get("size"):
+        lines.append(
+            f"Size: {constraints['size']} — REQUIRED. Pass size=\"{constraints['size']}\" to "
+            f"search_catalog. Only return products with stock in that size; the buyer "
+            f"cannot wear anything else, so an item that is out of stock in "
+            f"{constraints['size']} is not a result."
+        )
 
     if exclude_ids:
         capped = list(exclude_ids)[:40]
@@ -467,6 +522,10 @@ def find_products(
 
     accepted: dict[str, dict[str, Any]] = {}
     rounds: list[dict[str, Any]] = []
+    # Kept across rounds so an empty result can say WHY it's empty. "Nothing
+    # matched" and "everything matched but none of it comes in your size" are
+    # different answers, and only the second one is worth the shopper's time.
+    size_rejected: list[dict[str, Any]] = []
     feedback: Optional[str] = None
     seller_unreachable = False
 
@@ -500,6 +559,13 @@ def find_products(
             problems = evaluate_product(product, constraints, band, same_type_tokens)
             if problems:
                 rejected.append((product, problems))
+                if "size_unavailable" in problems:
+                    size_rejected.append(
+                        {
+                            "name": product.get("name"),
+                            "available_sizes": product.get("available_sizes") or [],
+                        }
+                    )
             else:
                 accepted[pid] = product
                 fresh_accepted += 1
@@ -565,6 +631,22 @@ def find_products(
     if ranked:
         remembered = list(previously_seen | {p["id"] for p in ranked})
         thread["seen_product_ids"] = remembered[-SEEN_PRODUCTS_MEMORY:]
+        # Names and IDs of what's currently on screen, so a follow-up about
+        # "the second one" or "the blue one" can be resolved to a product ID
+        # without the model having to scroll its own history for it.
+        thread["last_shown"] = [
+            {"id": p["id"], "name": p.get("name"), "brand": p.get("brand")} for p in ranked
+        ]
+        # Full records for the same products, so add_to_cart can build a real
+        # cart line from an ID the shopper pointed at instead of the agent
+        # inventing a price or a size. Re-inserted on every appearance so the
+        # eviction below drops the oldest-shown, not the oldest-first-seen.
+        catalog = thread.setdefault("shown_catalog", {})
+        for p in ranked:
+            catalog.pop(p["id"], None)
+            catalog[p["id"]] = p
+        for stale in list(catalog)[:-SHOWN_CATALOG_MEMORY]:
+            del catalog[stale]
 
     result: dict[str, Any] = {
         "products": ranked,
@@ -594,6 +676,7 @@ def find_products(
             "wrong_color": "not the requested colour",
             "wrong_gender": "a different gender",
             "same_as_primary": "the same kind of item",
+            "size_unavailable": "not available in your size",
         }
         loosened = ", ".join(sorted(readable.get(t, t) for t in relaxed_tags))
         result["relaxation_note"] = (
@@ -639,6 +722,21 @@ def find_products(
 
     if seller_unreachable:
         result["shortfall"] = "The seller could not be reached. Tell the shopper to try again shortly."
+    elif not ranked and size_rejected:
+        # The blocker is the one constraint that can't be negotiated away.
+        others = sorted({s for item in size_rejected for s in item["available_sizes"]})
+        result["size_shortfall"] = (
+            f"{len(size_rejected)} product(s) otherwise fit, but NONE of them are available "
+            f"in size {constraints['size']}. Tell the shopper exactly that — this specific "
+            f"item is not available in their size — rather than saying nothing matched. "
+            + (
+                f"These items do exist in {', '.join(others)}, so offer to look again in a "
+                f"different size if they'd wear one."
+                if others
+                else "They are sold out across the board."
+            )
+        )
+        result["shortfall"] = result["size_shortfall"]
     elif not ranked:
         result["shortfall"] = (
             f"After {len(rounds)} rounds the seller had nothing matching these constraints. "
@@ -646,9 +744,15 @@ def find_products(
             f"and offer to widen it — do NOT show products that break it."
         )
     elif len(ranked) < min_results:
+        reason = (
+            f" {len(size_rejected)} more were right but not stocked in size "
+            f"{constraints['size']}."
+            if size_rejected
+            else ""
+        )
         result["shortfall"] = (
-            f"Only {len(ranked)} of the {min_results} requested options actually fit. "
-            f"Show these and mention the selection at this spec is limited."
+            f"Only {len(ranked)} of the {min_results} requested options actually fit."
+            f"{reason} Show these and mention the selection at this spec is limited."
         )
 
     progress("resolved", found=len(ranked), rounds=len(rounds), purpose=result["purpose"])

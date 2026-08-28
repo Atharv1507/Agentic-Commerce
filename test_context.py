@@ -12,7 +12,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from context import (
-    scrub_constraints, subject_tokens, expresses_no_preference, normalize_gender, durable_hints
+    scrub_constraints, subject_tokens, expresses_no_preference, normalize_gender,
+    normalize_size, durable_hints
 )
 
 fails = []
@@ -83,6 +84,22 @@ thread6 = {}
 scrub_constraints({"query": "shirt", "materials": ["linen"]}, thread6, "linen shirts")
 scrub_constraints({"query": "belt", "purpose": "complement"}, thread6, "linen shirts")
 check("complement leaves subject alone", thread6["subject_query"], "shirt")
+
+# --- size: a detail, so it must survive everything taste-related does not
+check("large->L", normalize_size("large"), "L")
+check("size m->M", normalize_size("size m"), "M")
+check("XXL->XXL", normalize_size("xxl"), "XXL")
+check("nonsense size->None", normalize_size("banana"), None)
+check("blank size->None", normalize_size(""), None)
+
+thread7 = {}
+scrub_constraints({"query": "shirt", "colors": ["black"], "size": "L"}, thread7, "black shirts")
+c7, _ = scrub_constraints({"query": "t-shirt", "size": "L"}, thread7, "now some tees")
+check("size survives subject change", c7.get("size"), "L")
+
+c8, _ = scrub_constraints({"query": "shirt", "colors": ["black"], "size": "L"}, {}, "surprise me")
+check("no-pref drops colour", c8.get("colors"), None)
+check("no-pref keeps size", c8.get("size"), "L")
 
 print("\n" + ("ALL PASS" if not fails else f"{len(fails)} FAILURES:\n" + "\n".join(fails)))
 sys.exit(1 if fails else 0)
