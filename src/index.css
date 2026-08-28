@@ -2,47 +2,49 @@
 @import "tailwindcss";
 
 @theme {
-  /* Tomato/Platinum/Soft Linen/Gunmetal/Sandy Brown palette:
-     #D03711 (tomato), #E8E9EB (platinum), #E0DFD5 (soft linen), #313638
-     (gunmetal), #F09D51 (sandy brown). Soft linen is the page, platinum the
-     quiet fill, gunmetal all the type, tomato the primary, sandy brown the
-     warm secondary. One derived value earns its keep: --color-accent stays a
-     near-neutral because shadcn spends `accent` on subtle hover surfaces, not
-     brand moments — the brand orange lives in --color-sand. This tomato is
-     dark enough to carry near-white text (4.7:1) and to read as text on linen
-     (3.7:1), so it needs no deepened companion.
+  /* Coolors "Black/Jet Black/Almond Cream/Khaki Beige/Stone Brown" palette:
+     #0A0908 (black), #22333B (jet black), #EAE0D5 (almond cream),
+     #C6AC8F (khaki beige), #5E503F (stone brown). Almond cream is the page,
+     jet black carries all body type (softer than true black, same trick the
+     old gunmetal used), and true black is reserved for --color-primary so
+     it stays rare enough to read as a brand moment (buttons, the user's own
+     bubble, selection) instead of the page's default ink. Khaki beige is the
+     quiet warm fill, stone brown does double duty as the softer secondary
+     text tone. --color-sand and --color-mustard are derived in-family blends
+     (not literal swatches from the palette) that fill the "warm accent" and
+     "ambient glow" roles the rest of the app already expects. */
+  --color-background: #EAE0D5;
+  --color-foreground: #22333B;
 
-     --color-mustard is the ambient half of that warmth: glows, gradients,
-     hover washes and back-shaded surfaces lean on this golden yellow instead
-     of tomato, so tomato itself stays rare enough to still read as an accent
-     (buttons, the user's own bubble, selection state) rather than the app's
-     wallpaper. Never used as small standalone text — at a lightness this
-     close to the page it can't clear text-contrast, so it stays a fill/border/
-     glow color, exactly how --color-sand already behaves. */
-  --color-background: #e0dfd5;
-  --color-foreground: #313638;
-  --color-card: #f2f1ec;
-  --color-card-foreground: #313638;
-  --color-primary: #d03711;
-  --color-primary-foreground: #fff8f5;
-  --color-secondary: #e8e9eb;
-  --color-secondary-foreground: #313638;
-  --color-muted: #e8e9eb;
-  --color-muted-foreground: #5a6265;
-  --color-accent: #ebe9df;
-  --color-accent-foreground: #313638;
-  --color-sand: #f09d51;
-  --color-sand-foreground: #313638;
-  --color-mustard: #d9ae34;
-  --color-mustard-foreground: #313638;
-  --color-destructive: #b23a2a;
-  --color-border: #cdcbbe;
-  --color-ring: #d03711;
-  --color-input: #cdcbbe;
-  --color-overlay: rgba(49, 54, 56, 0.45);
+  --color-card: #F4EEE3;
+  --color-card-foreground: #22333B;
 
-  /* Single typeface, used across headings and body — personality comes from
-     weight/size contrast (see .font-hero / .font-emphasis below), not a second family. */
+  --color-primary: #0A0908;
+  --color-primary-foreground: #EAE0D5;
+
+  --color-secondary: #C6AC8F;
+  --color-secondary-foreground: #22333B;
+
+  --color-muted: #C6AC8F;
+  --color-muted-foreground: #5E503F;
+
+  --color-accent: #F0E6D8;
+  --color-accent-foreground: #22333B;
+
+  --color-sand: #8E7E67;
+  --color-sand-foreground: #EAE0D5;
+
+  --color-mustard: #D9C7AC;
+  --color-mustard-foreground: #22333B;
+
+  --color-destructive: #9C4A3C;
+
+  --color-border: #D8CBB8;
+  --color-ring: #0A0908;
+  --color-input: #D8CBB8;
+
+  --color-overlay: rgba(10, 9, 8, 0.5);
+
   --font-sans: "Montserrat", sans-serif;
   --font-heading: "Montserrat", sans-serif;
 

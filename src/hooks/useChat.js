@@ -139,7 +139,7 @@ export default function useChat(
           email: order.buyer?.email || "",
           contact: order.buyer?.phone || "",
         },
-        theme: { color: "#6c584c" },
+        theme: { color: "#5e503f" },
         handler: (paymentResponse) => {
           onPaymentComplete(paymentResponse.razorpay_payment_id, order.order_id);
         },
