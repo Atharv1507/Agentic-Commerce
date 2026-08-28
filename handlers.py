@@ -346,8 +346,9 @@ def add_to_cart(
                     "product_id": product_id,
                     "reason": "not_shown",
                     "message": (
-                        f"{product_id} has not been shown in this conversation, so it cannot "
-                        f"be added. Search for it first, then add it from the results."
+                        "That item hasn't been shown in this conversation, so it can't be "
+                        "added yet. Search for it first, then add it from the results — do "
+                        "not mention its internal ID to the shopper."
                     ),
                 }
             )

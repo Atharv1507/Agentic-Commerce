@@ -198,8 +198,9 @@ def build_session_context(session: dict[str, Any], thread: dict[str, Any]) -> st
         )
         lines.append(
             f"Products currently on screen, in the order shown: {listed}. Use these IDs "
-            f"when the shopper refers to one of them — e.g. check_availability for a "
-            f"size question about a specific item."
+            f"internally, in your own tool calls, when the shopper refers to one of them — "
+            f"e.g. check_availability for a size question about a specific item. NEVER say "
+            f"an ID out loud or put one in your reply; refer to a product by name only."
         )
 
     # Rendered field by field rather than json.dumps(cart): a cart item is a
@@ -219,8 +220,9 @@ def build_session_context(session: dict[str, Any], thread: dict[str, Any]) -> st
         )
         lines.append(
             f"Current cart, one entry per line — the SAME product in two sizes is two "
-            f"separate lines: {rendered}. Use update_cart with the product ID (and the "
-            f"size, when a product appears more than once) to change or remove one."
+            f"separate lines: {rendered}. Use update_cart with the product ID internally "
+            f"(and the size, when a product appears more than once) to change or remove "
+            f"one — never say the ID itself to the shopper, refer to the item by name."
         )
     else:
         lines.append("Current cart: empty")
