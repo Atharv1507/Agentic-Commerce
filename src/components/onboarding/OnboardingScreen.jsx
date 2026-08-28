@@ -1,20 +1,32 @@
 import { useState, useRef, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { ArrowRight, Check } from "lucide-react";
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 const steps = [
   {
     id: "name",
-    label: "What's your name?",
-    placeholder: "Enter your name",
+    label: "First, what should we call you?",
+    emphasis: "call you",
+    placeholder: "Your name",
     type: "text",
     validation: (v) => v.trim().length >= 2,
     errorMsg: "Name must be at least 2 characters",
   },
   {
+    id: "assistant_name",
+    label: "What should we call your assistant?",
+    emphasis: "your assistant",
+    placeholder: "e.g. Nova",
+    type: "text",
+    validation: (v) => v.trim().length >= 2,
+    errorMsg: "Give your assistant a name (at least 2 characters)",
+  },
+  {
     id: "email",
-    label: "What's your email?",
+    label: "Where can we reach you?",
+    emphasis: "reach you",
     placeholder: "you@example.com",
     type: "email",
     validation: (v) => /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),
@@ -22,7 +34,8 @@ const steps = [
   },
   {
     id: "phone",
-    label: "What's your phone number?",
+    label: "And a number, in case we need it?",
+    emphasis: "number",
     placeholder: "9876543210",
     type: "tel",
     validation: (v) => /^\d{10}$/.test(v.replace(/\s/g, "")),
@@ -30,37 +43,52 @@ const steps = [
   },
   {
     id: "address",
-    label: "Where should we deliver?",
-    placeholder: "Enter your delivery address",
+    label: "Where should we deliver your finds?",
+    emphasis: "deliver",
+    placeholder: "Your delivery address",
     type: "text",
     validation: (v) => v.trim().length >= 5,
     errorMsg: "Please enter a valid address",
   },
   {
     id: "gender",
-    label: "What's your gender?",
+    label: "Help us tailor your style",
+    emphasis: "tailor",
     type: "options",
     options: ["Male", "Female", "Other"],
   },
   {
     id: "payment_method",
-    label: "Preferred payment method?",
+    label: "How would you like to pay?",
+    emphasis: "pay",
     type: "options",
     options: ["UPI", "Card", "COD"],
   },
 ];
 
-const slideVariants = {
-  enter: (direction) => ({ x: direction > 0 ? 100 : -100, opacity: 0 }),
-  center: { x: 0, opacity: 1 },
-  exit: (direction) => ({ x: direction > 0 ? -100 : 100, opacity: 0 }),
+function EmphasizedLabel({ label, emphasis }) {
+  if (!emphasis) return label;
+  const idx = label.indexOf(emphasis);
+  if (idx === -1) return label;
+  return (
+    <>
+      {label.slice(0, idx)}
+      <span className="emphasis">{emphasis}</span>
+      {label.slice(idx + emphasis.length)}
+    </>
+  );
+}
+
+const fadeVariants = {
+  enter: { opacity: 0, y: 14 },
+  center: { opacity: 1, y: 0 },
+  exit: { opacity: 0, y: -14 },
 };
 
-export default function OnboardingScreen({ onComplete }) {
+export default function OnboardingScreen({ onComplete, onSkip }) {
   const [currentStep, setCurrentStep] = useState(0);
   const [values, setValues] = useState({});
   const [error, setError] = useState("");
-  const [direction, setDirection] = useState(1);
   const [isComplete, setIsComplete] = useState(false);
   const inputRef = useRef(null);
 
@@ -71,7 +99,7 @@ export default function OnboardingScreen({ onComplete }) {
     if (step?.type !== "options" && inputRef.current) {
       inputRef.current.focus();
     }
-  }, [currentStep]);
+  }, [currentStep, step]);
 
   const validate = (value) => {
     if (step.validation && !step.validation(value)) {
@@ -92,7 +120,6 @@ export default function OnboardingScreen({ onComplete }) {
       return;
     }
 
-    setDirection(1);
     setCurrentStep((prev) => prev + 1);
   };
 
@@ -109,145 +136,162 @@ export default function OnboardingScreen({ onComplete }) {
         setIsComplete(true);
         setTimeout(() => onComplete({ ...values, [step.id]: option }), 800);
       } else {
-        setDirection(1);
         setCurrentStep((prev) => prev + 1);
       }
     }, 300);
   };
 
-  const progress = ((currentStep + 1) / steps.length) * 100;
-
   return (
-    <div className="flex min-h-screen items-center justify-center p-8">
+    <div className="relative flex min-h-screen items-center justify-center p-8">
+      {!isComplete && (
+        <motion.button
+          onClick={() => onSkip(values)}
+          className="absolute top-8 right-8 text-sm text-muted-foreground transition-colors hover:text-foreground"
+          initial={{ opacity: 0 }}
+          animate={{ opacity: 1 }}
+          transition={{ delay: 0.6 }}
+        >
+          Skip for now &rarr;
+        </motion.button>
+      )}
+
       <motion.div
-        className="w-full max-w-lg"
+        className="w-full max-w-xl"
         initial={{ opacity: 0, y: 20 }}
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
       >
-        {/* Progress bar */}
-        <div className="mb-12 flex gap-2">
+        {/* Progress */}
+        <div className="mb-2 flex items-center justify-between">
+          <span className="text-xs tracking-widest text-muted-foreground uppercase">
+            Step {currentStep + 1} of {steps.length}
+          </span>
+        </div>
+        <div className="mb-14 flex gap-1.5">
           {steps.map((_, i) => (
-            <motion.div
+            <div
               key={i}
-              className="h-0.5 flex-1 rounded-full overflow-hidden"
+              className="h-0.5 flex-1 overflow-hidden rounded-full"
               style={{ background: "rgba(255,255,255,0.1)" }}
             >
               <motion.div
                 className="h-full rounded-full"
                 style={{ background: "var(--color-primary)" }}
                 initial={{ width: 0 }}
-                animate={{
-                  width: i < currentStep ? "100%" : i === currentStep ? "100%" : "0%",
-                }}
+                animate={{ width: i <= currentStep ? "100%" : "0%" }}
                 transition={{ duration: 0.4, ease: "easeOut" }}
               />
-            </motion.div>
+            </div>
           ))}
         </div>
 
         {/* Step content */}
-        <div className="relative min-h-[200px]">
-          <AnimatePresence mode="wait" custom={direction}>
-            <motion.div
-              key={currentStep}
-              custom={direction}
-              variants={slideVariants}
-              initial="enter"
-              animate="center"
-              exit="exit"
-              transition={{ duration: 0.3, ease: "easeInOut" }}
-              className="absolute inset-0"
-            >
-              <motion.label
-                className="block font-heading text-3xl font-semibold mb-8"
-                style={{ color: "var(--color-foreground)" }}
-                initial={{ opacity: 0, y: 10 }}
-                animate={{ opacity: 1, y: 0 }}
-                transition={{ delay: 0.1 }}
+        <div className="relative min-h-[260px]">
+          <AnimatePresence mode="wait">
+            {!isComplete ? (
+              <motion.div
+                key={currentStep}
+                variants={fadeVariants}
+                initial="enter"
+                animate="center"
+                exit="exit"
+                transition={{ duration: 0.45, ease: "easeInOut" }}
+                className="absolute inset-0"
               >
-                {step.label}
-              </motion.label>
+                <h1 className="font-hero mb-10 text-3xl md:text-4xl">
+                  <EmphasizedLabel label={step.label} emphasis={step.emphasis} />
+                </h1>
 
-              {step.type === "options" ? (
-                <div className="flex flex-col gap-3">
-                  {step.options.map((option) => (
-                    <motion.button
-                      key={option}
-                      onClick={() => handleOptionSelect(option)}
-                      className={cn(
-                        "w-full px-6 py-4 rounded-lg text-left text-lg transition-all",
-                        "border border-border hover:border-primary",
-                        values[step.id] === option
-                          ? "border-primary bg-primary/10"
-                          : "bg-card"
-                      )}
-                      whileHover={{ scale: 1.01 }}
-                      whileTap={{ scale: 0.99 }}
-                    >
-                      <div className="flex items-center justify-between">
-                        <span>{option}</span>
-                        {values[step.id] === option && (
-                          <Check className="h-5 w-5 text-primary" />
+                {step.type === "options" ? (
+                  <div className="flex flex-col gap-3">
+                    {step.options.map((option) => (
+                      <motion.button
+                        key={option}
+                        onClick={() => handleOptionSelect(option)}
+                        className={cn(
+                          "w-full rounded-lg border px-6 py-4 text-left text-lg transition-all",
+                          "border-border hover:border-primary",
+                          values[step.id] === option ? "border-primary bg-primary/10" : "bg-card"
                         )}
-                      </div>
-                    </motion.button>
-                  ))}
-                </div>
-              ) : (
-                <div className="relative">
-                  <input
-                    ref={inputRef}
-                    type={step.type}
-                    value={values[step.id] || ""}
-                    onChange={(e) => {
-                      const val = step.type === "tel" ? e.target.value.replace(/[^\d]/g, "") : e.target.value;
-                      setValues((prev) => ({ ...prev, [step.id]: val }));
-                      setError("");
-                    }}
-                    onKeyDown={handleKeyDown}
-                    placeholder={step.placeholder}
-                    className={cn(
-                      "w-full bg-transparent border-b-2 border-border px-0 py-4 text-xl",
-                      "focus:outline-none focus:border-primary transition-colors placeholder:text-muted-foreground",
-                      error && "border-destructive"
-                    )}
-                  />
-                  <AnimatePresence>
-                    {error && (
-                      <motion.p
-                        initial={{ opacity: 0, y: -5 }}
-                        animate={{ opacity: 1, y: 0 }}
-                        exit={{ opacity: 0 }}
-                        className="text-destructive text-sm mt-2"
+                        whileHover={{ scale: 1.01 }}
+                        whileTap={{ scale: 0.99 }}
                       >
-                        {error}
-                      </motion.p>
-                    )}
-                  </AnimatePresence>
-                </div>
-              )}
-            </motion.div>
+                        <div className="flex items-center justify-between">
+                          <span>{option}</span>
+                          {values[step.id] === option && <Check className="h-5 w-5 text-primary" />}
+                        </div>
+                      </motion.button>
+                    ))}
+                  </div>
+                ) : (
+                  <div className="relative">
+                    <input
+                      ref={inputRef}
+                      type={step.type}
+                      value={values[step.id] || ""}
+                      onChange={(e) => {
+                        const val =
+                          step.type === "tel" ? e.target.value.replace(/[^\d]/g, "") : e.target.value;
+                        setValues((prev) => ({ ...prev, [step.id]: val }));
+                        setError("");
+                      }}
+                      onKeyDown={handleKeyDown}
+                      placeholder={step.placeholder}
+                      className={cn(
+                        "w-full border-b-2 border-border bg-transparent px-0 py-4 text-2xl",
+                        "transition-colors placeholder:text-muted-foreground focus:border-primary focus:outline-none",
+                        error && "border-destructive"
+                      )}
+                    />
+                    <AnimatePresence>
+                      {error && (
+                        <motion.p
+                          initial={{ opacity: 0, y: -5 }}
+                          animate={{ opacity: 1, y: 0 }}
+                          exit={{ opacity: 0 }}
+                          className="mt-2 text-sm text-destructive"
+                        >
+                          {error}
+                        </motion.p>
+                      )}
+                    </AnimatePresence>
+                  </div>
+                )}
+              </motion.div>
+            ) : (
+              <motion.div
+                key="complete"
+                className="absolute inset-0 flex flex-col items-center justify-center text-center"
+                initial={{ opacity: 0, scale: 0.96 }}
+                animate={{ opacity: 1, scale: 1 }}
+                transition={{ duration: 0.4 }}
+              >
+                <motion.div
+                  className="mb-6 flex size-16 items-center justify-center rounded-full bg-primary/10"
+                  initial={{ scale: 0 }}
+                  animate={{ scale: 1 }}
+                  transition={{ type: "spring", stiffness: 260, damping: 18, delay: 0.1 }}
+                >
+                  <Check className="size-8 text-primary" />
+                </motion.div>
+                <p className="font-hero text-2xl">
+                  You&rsquo;re all <span className="emphasis">set</span>
+                </p>
+              </motion.div>
+            )}
           </AnimatePresence>
         </div>
 
-        {/* Next button */}
         {!isComplete && step.type !== "options" && (
-          <motion.button
+          <Button
             onClick={handleNext}
             disabled={!values[step.id]}
-            className={cn(
-              "mt-8 px-8 py-3 rounded-lg flex items-center gap-2 font-medium transition-all",
-              values[step.id]
-                ? "bg-primary text-primary-foreground hover:bg-accent"
-                : "bg-muted text-muted-foreground cursor-not-allowed"
-            )}
-            whileHover={values[step.id] ? { scale: 1.02 } : {}}
-            whileTap={values[step.id] ? { scale: 0.98 } : {}}
+            size="lg"
+            className="mt-8 gap-2 rounded-lg px-8 py-6 text-base font-medium"
           >
             {isLastStep ? "Complete" : "Continue"}
             <ArrowRight className="h-4 w-4" />
-          </motion.button>
+          </Button>
         )}
       </motion.div>
     </div>
