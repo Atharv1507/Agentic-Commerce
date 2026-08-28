@@ -101,6 +101,7 @@ function App() {
                 onAddToCart={chat.addToCart}
                 assistantName={session?.assistantName}
                 userSize={session?.size}
+                threadId={chat.threadId}
               />
             </div>
 

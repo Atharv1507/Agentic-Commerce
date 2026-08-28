@@ -28,6 +28,7 @@ export default function ChatWindow({
   onAddToCart,
   assistantName,
   userSize,
+  threadId,
 }) {
   const displayName = assistantName || DEFAULT_ASSISTANT_NAME;
 
@@ -65,12 +66,35 @@ export default function ChatWindow({
       </motion.div>
 
       {/* Messages */}
-      <MessageScrollerProvider autoScroll>
+      {/* Scrolling follows the shopper's OWN messages, not the bottom of the
+          transcript: each user turn is a scroll anchor, so sending one pulls it
+          to the top of the viewport and the reply lands underneath, read from
+          its first line. Sticking to the bottom instead would leave a reply
+          that contains a product grid showing nothing but the last row of
+          cards, with the agent's actual answer scrolled off the top — the
+          taller the reply, the worse the result.
+
+          `last-anchor` seeds the same view when a conversation is opened or
+          restored: the newest exchange, from the question that started it,
+          falling back to the very end when what follows already fits.
+
+          Keyed on the thread so switching chats re-seeds it. Without the key
+          the provider never unmounts, its "default position already applied"
+          latch stays set, and an older conversation opens at whatever scroll
+          offset the previous one happened to be left at.
+
+          The scroll-to-end button below stays available throughout, so jumping
+          to the absolute bottom is always one tap away. */}
+      <MessageScrollerProvider key={threadId || "new"} autoScroll defaultScrollPosition="last-anchor">
         <MessageScroller className="relative z-10 flex-1">
           <MessageScrollerViewport>
             <MessageScrollerContent className="px-6 py-8 md:px-10">
               {messages.map((msg) => (
-                <MessageScrollerItem key={msg.id} messageId={msg.id}>
+                <MessageScrollerItem
+                  key={msg.id}
+                  messageId={msg.id}
+                  scrollAnchor={msg.role === "user"}
+                >
                   {msg.type === "form" ? (
                     <div className="flex flex-col gap-3">
                       {msg.content && <ChatMessage message={{ role: "agent", content: msg.content }} />}
