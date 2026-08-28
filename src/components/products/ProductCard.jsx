@@ -1,70 +1,73 @@
 import { motion } from "framer-motion";
 import { Plus, Check } from "lucide-react";
+import { Card } from "@/components/ui/card";
 import { cn } from "@/lib/utils";
 
-export default function ProductCard({ product, inCart, onAddToCart }) {
+// Real product photos take over here; the color-tinted gradient tile with the
+// brand's initial only stands in when a product has no image to show.
+export function ProductArt({ product, className }) {
+  if (product.image) {
+    return (
+      <div className={cn("relative overflow-hidden bg-secondary", className)}>
+        <img src={product.image} alt={product.name} className="size-full object-cover" loading="lazy" />
+      </div>
+    );
+  }
+
+  const tint = product.color?.toLowerCase();
   return (
-    <motion.div
-      className={cn(
-        "group relative bg-card rounded-2xl overflow-hidden border border-border",
-        "hover:border-primary/50 transition-colors"
-      )}
-      whileHover={{ y: -4 }}
-      transition={{ duration: 0.2 }}
+    <div
+      className={cn("relative flex items-center justify-center overflow-hidden bg-secondary", className)}
+      style={{
+        backgroundImage: tint
+          ? `radial-gradient(120% 120% at 20% 15%, ${tint}33 0%, transparent 55%), linear-gradient(160deg, var(--color-secondary) 0%, var(--color-card) 100%)`
+          : "linear-gradient(160deg, var(--color-secondary) 0%, var(--color-card) 100%)",
+      }}
     >
-      {/* Image placeholder */}
-      <div className="aspect-[4/3] bg-secondary flex items-center justify-center overflow-hidden">
-        <div className="text-6xl opacity-20">
-          {product.brand?.charAt(0) || "?"}
-        </div>
-        <div className="absolute inset-0 bg-gradient-to-t from-card/80 to-transparent" />
-      </div>
+      <span className="font-hero text-6xl text-white/10">{product.brand?.charAt(0) || "?"}</span>
+    </div>
+  );
+}
 
-      {/* Content */}
-      <div className="p-4">
-        <div className="flex items-start justify-between gap-2 mb-1">
-          <h3 className="font-heading text-base font-semibold leading-tight">
-            {product.name}
-          </h3>
-        </div>
-
-        <p className="text-sm text-muted-foreground mb-3">{product.brand}</p>
-
-        <div className="flex items-center justify-between">
-          <span className="text-lg font-semibold text-primary">
-            ₹{product.price?.toLocaleString()}
-          </span>
-
-          <motion.button
-            onClick={() => onAddToCart(product)}
-            className={cn(
-              "p-2 rounded-lg transition-colors",
-              inCart
-                ? "bg-primary/20 text-primary"
-                : "bg-primary text-primary-foreground hover:bg-accent"
-            )}
-            whileHover={{ scale: 1.1 }}
-            whileTap={{ scale: 0.9 }}
-          >
-            {inCart ? (
-              <Check className="h-4 w-4" />
-            ) : (
-              <Plus className="h-4 w-4" />
-            )}
-          </motion.button>
+export default function ProductCard({ product, inCart, onAddToCart, onOpen, layoutId }) {
+  return (
+    <motion.div layoutId={layoutId} whileHover={{ y: -4 }} transition={{ duration: 0.2 }}>
+      <Card
+        className="group relative cursor-pointer gap-0 overflow-hidden border-border p-0 transition-colors hover:border-primary/50"
+        onClick={onOpen}
+      >
+        <div className="relative aspect-[4/3]">
+          <ProductArt product={product} className="absolute inset-0" />
+          <div
+            className="pointer-events-none absolute inset-0 bg-gradient-to-t from-card/90 to-transparent"
+            style={{ maskImage: "linear-gradient(to top, black 25%, transparent 55%)" }}
+          />
         </div>
 
-        {/* Color indicator */}
-        {product.color && (
-          <div className="mt-3 flex items-center gap-2">
-            <div
-              className="size-3 rounded-full border border-border"
-              style={{ backgroundColor: product.color?.toLowerCase() }}
-            />
-            <span className="text-xs text-muted-foreground">{product.color}</span>
+        <div className="p-4">
+          <h3 className="text-base leading-tight font-semibold">{product.name}</h3>
+          <p className="mb-3 text-sm text-muted-foreground">{product.brand}</p>
+
+          <div className="flex items-center justify-between">
+            <span className="text-lg font-semibold text-primary">₹{product.price?.toLocaleString()}</span>
+
+            <motion.button
+              onClick={(e) => {
+                e.stopPropagation();
+                onAddToCart(product);
+              }}
+              className={cn(
+                "rounded-lg p-2 transition-colors",
+                inCart ? "bg-primary/20 text-primary" : "bg-primary text-primary-foreground hover:bg-accent"
+              )}
+              whileHover={{ scale: 1.1 }}
+              whileTap={{ scale: 0.9 }}
+            >
+              {inCart ? <Check className="h-4 w-4" /> : <Plus className="h-4 w-4" />}
+            </motion.button>
           </div>
-        )}
-      </div>
+        </div>
+      </Card>
     </motion.div>
   );
 }
