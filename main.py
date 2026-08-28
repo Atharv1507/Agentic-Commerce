@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 from fastapi import FastAPI
@@ -38,6 +39,21 @@ sessions: dict[str, list[dict[str, Any]]] = {}
 _session_order: list[str] = []
 # Backstop in case a caller never deletes its session (crash, timeout).
 MAX_SESSIONS = 200
+
+# The only caller of /message is the Personal Agent's negotiation loop, and it
+# reads nothing but `tool_results["search_catalog"]` — the natural-language
+# reply and any other tool's output are discarded (see negotiation.py's
+# `_products_from_reply`). Once a round's tool calls are all read-only lookups
+# like this, there is nothing left for another completion to decide, so paying
+# for a whole extra model call just to write a summary nobody reads is pure
+# latency. create_order is deliberately excluded — a real mutation still gets
+# the model's full multi-round reasoning.
+READ_ONLY_TOOLS = {"search_catalog", "price_range", "check_stock"}
+
+# Tool execution is I/O-bound (Chroma query, catalogue lookups) and independent
+# across calls in the same round, so run them concurrently instead of one at a
+# time. Small pool: a round realistically has a couple of tool calls, not many.
+_tool_executor = ThreadPoolExecutor(max_workers=4)
 
 
 def _touch_session(session_id: str) -> list[dict[str, Any]]:
@@ -134,10 +150,21 @@ async def handle_message(request: MessageRequest) -> dict[str, Any]:
                 }
             )
 
-            for tool_call in assistant_message.tool_calls:
-                arguments = json.loads(tool_call.function.arguments or "{}")
-                result = execute_tool(tool_call.function.name, arguments)
+            calls = assistant_message.tool_calls
+            tool_names = {tc.function.name for tc in calls}
+            # ThreadPoolExecutor.map preserves call order in its results, so
+            # the concurrency is invisible to the history/audit bookkeeping
+            # below — it still appends in the same order a sequential loop
+            # would have.
+            arg_list = [json.loads(tc.function.arguments or "{}") for tc in calls]
+            results = list(
+                _tool_executor.map(
+                    lambda pair: execute_tool(pair[0].function.name, pair[1]),
+                    zip(calls, arg_list),
+                )
+            )
 
+            for tool_call, result in zip(calls, results):
                 all_tool_results.append(
                     {
                         "tool_call_id": tool_call.id,
@@ -152,6 +179,10 @@ async def handle_message(request: MessageRequest) -> dict[str, Any]:
                         "content": json.dumps(result),
                     }
                 )
+
+            if tool_names <= READ_ONLY_TOOLS:
+                final_message = f"[{len(calls)} lookup(s) executed: {', '.join(sorted(tool_names))}]"
+                break
 
         if final_message is None:
             logger.warning("Tool iteration budget exhausted; forcing a text response")
