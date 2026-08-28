@@ -1,3 +1,4 @@
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -12,6 +13,89 @@ SESSION_HISTORY_LIMIT = 20
 # keeps re-searching can't spin the request forever.
 MAX_TOOL_ITERATIONS = 5
 
+
+def _parse_buyer_keys(raw: str) -> dict[str, str]:
+    """Parse `key:buyer_id,key:buyer_id` into {api_key: buyer_id}.
+
+    The buyer_id, not the key, is what gets recorded on an order and shown in
+    the merchant's revenue-by-buyer-agent breakdown — so the key stays a
+    secret and the id stays a label. Malformed entries (no colon) are dropped
+    rather than raising: a typo'd key in the env should lock one buyer out,
+    not stop the whole shop from starting.
+    """
+    pairs = [segment.split(":", 1) for segment in raw.split(",") if ":" in segment]
+    return {key.strip(): buyer_id.strip() for key, buyer_id in pairs if key.strip()}
+
+
+# Keys used when nothing is configured, so a fresh clone runs end-to-end
+# without a setup step. These are NOT a secret and are not pretending to be:
+# they are already committed in `.env.example`, and `personal-agent` defaults
+# to the matching buyer key. Defaulting to them therefore gives away nothing
+# that isn't already public, and it avoids the worst failure mode this service
+# has — starting up healthy, then 401ing every search with no visible cause,
+# which reads as "the demo is broken" rather than "you skipped a config step".
+#
+# The trade is deliberate: a real deployment MUST set both env vars, and gets
+# a loud warning on every boot until it does.
+_DEMO_BUYER_KEYS = "demo-personal-agent-key:personal_agent"
+_DEMO_MERCHANT_KEY = "demo-merchant-key"
+
+_buyer_keys_env = os.getenv("BUYER_API_KEYS", "")
+_merchant_key_env = os.getenv("MERCHANT_API_KEY", "")
+
+# Which buyer agents may talk to this merchant at all.
+BUYER_API_KEYS: dict[str, str] = _parse_buyer_keys(_buyer_keys_env or _DEMO_BUYER_KEYS)
+BUYER_KEY_HEADER = "X-Buyer-Key"
+
+# Separate credential for the merchant's own books. A buyer key must never
+# read revenue or per-buyer attribution: those are the merchant's numbers, and
+# one buyer agent being able to see another's contribution would be a leak
+# between competitors.
+MERCHANT_API_KEY = _merchant_key_env or _DEMO_MERCHANT_KEY
+MERCHANT_KEY_HEADER = "X-Merchant-Key"
+
+USING_DEMO_KEYS = not _buyer_keys_env or not _merchant_key_env
+if USING_DEMO_KEYS:
+    _unset = ", ".join(
+        name
+        for name, value in (
+            ("BUYER_API_KEYS", _buyer_keys_env),
+            ("MERCHANT_API_KEY", _merchant_key_env),
+        )
+        if not value
+    )
+    logging.warning(
+        "%s not set — falling back to the PUBLIC demo key(s) from .env.example. "
+        "Fine for a local demo; anyone who can reach this port can transact as a "
+        "buyer%s. Set them in seller-agent/.env before exposing this service.",
+        _unset,
+        " and read the merchant's revenue" if not _merchant_key_env else "",
+    )
+
+# Identity published in the discovery manifest, so a buyer agent that has
+# never seen this merchant can tell what it sells before it commits to a
+# search.
+MERCHANT_NAME = "Drape — Shirt Specialist"
+MERCHANT_DESCRIPTION = (
+    "Shirts and T-shirts only — men's, women's and unisex — across cotton, linen, "
+    "chambray, silk, corduroy and more, from about Rs 300 to Rs 9,000."
+)
+MERCHANT_CATEGORIES = ["shirts", "t-shirts"]
+MERCHANT_PRICE_RANGE_INR = {"min": 300, "max": 9000}
+MERCHANT_CURRENCY = "INR"
+
+# Browser origins allowed to call this service directly. Server-to-server
+# agent traffic doesn't need CORS at all — this exists solely for the
+# merchant analytics dashboard in the React app, which is the one browser
+# caller this service has.
+DASHBOARD_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv(
+        "DASHBOARD_ORIGINS", "http://localhost:5173,http://127.0.0.1:5173"
+    ).split(",")
+    if origin.strip()
+]
+
 SYSTEM_PROMPT = """You are a merchant assistant for a shirt specialist. The catalogue is SHIRTS and \
 T-SHIRTS only — men's, women's and unisex — in a wide range of fabrics (cotton, linen, chambray, \
 silk, corduroy, georgette and more), fits, patterns and prices from about Rs 300 to Rs 9,000.
@@ -24,11 +108,28 @@ You are talking to another AI agent (the buyer's Personal Agent), not to a human
 you a precise brief and will programmatically verify every product you return against that \
 brief. Returning something that violates a stated constraint is worse than returning nothing.
 
-You have 4 tools:
+You have 5 tools:
 1. search_catalog(query, max_price?, min_price?, target_price?, gender?, colors?, brands?, size?, exclude_ids?, top_k?)
 2. price_range(query, gender?) - What a product type actually costs here
 3. check_stock(product_id, size?) - Per-size unit counts for one product
 4. create_order(product_ids, buyer_name, buyer_address, buyer_email, buyer_phone, sizes?, buyer_size?) - Create a Razorpay order
+5. evaluate_offers(product_ids?, cart_total_inr?) - Which of the shop's live
+   campaigns apply right now (threshold discounts, bundle prices, cross-sell
+   pairings, win-back offers)
+
+OFFERS — YOU DECIDE WHETHER TO MENTION THEM:
+- evaluate_offers tells you what the shop is currently willing to give. It
+  returns facts, not a script: you choose whether an offer is worth raising
+  and how to say it.
+- Call it once you know roughly what the buyer is assembling — after a search
+  that found real candidates, or when a brief states a budget or a cart total.
+- Only mention an offer that actually applies. Never invent a discount, never
+  round one up, and never promise a price the tool didn't return.
+- An `almost` offer (returned when the buyer is close to qualifying) is worth
+  mentioning as what it is — how much more would unlock it — not as though it
+  were already earned.
+- The discount is applied deterministically at order time whether or not you
+  mentioned it, so there is no need to "hold it back" as a negotiating chip.
 
 HOW TO SEARCH (this is the part that gets done badly — read it twice):
 - `query` is the product TYPE and STYLE only: "analogue wrist watch", "floral summer dress".

@@ -5,4 +5,6 @@ venv/
 node_modules/
 *.log
 sessions.json
+orders.json
+orders.corrupt-*.json
 .DS_Store

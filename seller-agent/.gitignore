@@ -2,3 +2,7 @@
 *__pycache__
 venv
 *.env
+
+# Real order/revenue records written at runtime — never committed.
+orders.json
+orders.corrupt-*.json
