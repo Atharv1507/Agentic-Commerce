@@ -183,7 +183,7 @@ function SettingsForm({ session, onOpenChange, onSave }) {
 
   return (
     <>
-      <div className="flex max-h-[60vh] flex-col gap-6 overflow-y-auto pr-1">
+      <div className="flex max-h-[60vh] flex-col gap-6 overflow-y-auto">
         <section className="flex flex-col gap-4">
           <div>
             <h3 className="text-sm font-medium text-foreground">Your details</h3>

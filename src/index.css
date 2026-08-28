@@ -54,26 +54,33 @@
   --radius-xl: 1rem;
   --radius-2xl: 1.75rem;
 
-  /* Type scale built on the golden ratio (φ ≈ 1.618, √φ ≈ 1.272) from a 16px base.
-     Line-heights tighten as size increases, per standard display-type convention. */
   --text-xs: 0.75rem;
   --text-xs--line-height: 1.5;
+
   --text-sm: 0.875rem;
   --text-sm--line-height: 1.55;
+
   --text-base: 1rem;
   --text-base--line-height: 1.6;
+
   --text-lg: 1.272rem;
   --text-lg--line-height: 1.5;
+
   --text-xl: 1.618rem;
   --text-xl--line-height: 1.35;
+
   --text-2xl: 2.058rem;
   --text-2xl--line-height: 1.25;
+
   --text-3xl: 2.618rem;
   --text-3xl--line-height: 1.15;
+
   --text-4xl: 3.33rem;
   --text-4xl--line-height: 1.1;
+
   --text-5xl: 4.236rem;
   --text-5xl--line-height: 1.05;
+
   --text-6xl: 6.854rem;
   --text-6xl--line-height: 1;
 }
@@ -125,17 +132,35 @@
   color: var(--color-primary-foreground);
 }
 
+/* Scrollbars stay invisible at rest and only appear while the pointer is
+   over the scrolling area — the overlay-scrollbar convention. Hovering a
+   descendant still counts as hovering every scrollable ancestor it sits in,
+   so this "reveal on hover" rule reaches nested scroll containers too. */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: transparent transparent;
+}
+
+*:hover {
+  scrollbar-color: #b8a488 transparent;
+}
+
 ::-webkit-scrollbar {
   width: 6px;
+  height: 6px;
 }
 
 ::-webkit-scrollbar-track {
-  background: var(--color-background);
+  background: transparent;
 }
 
 ::-webkit-scrollbar-thumb {
-  background: #b9b7a9;
+  background: transparent;
   border-radius: 3px;
+}
+
+*:hover::-webkit-scrollbar-thumb {
+  background: #b8a488;
 }
 
 ::-webkit-scrollbar-thumb:hover {
