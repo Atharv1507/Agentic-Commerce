@@ -1,5 +1,6 @@
 import { useState, useCallback, useMemo } from "react";
 import { DEFAULT_ASSISTANT_NAME, cartLineKey, resolveCartSize } from "@/lib/utils";
+import { openRazorpayCheckout } from "@/lib/razorpay";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const API_URL = `${API_BASE}/chat`;
@@ -121,37 +122,43 @@ export default function useChat(
     setProgress(null);
   }, []);
 
+  // The merchant hands back a browser-free payment page for every order (its
+  // `payment_url`). When the checkout SDK can't run, that link is the
+  // difference between "your order is stuck" and "pay it here" — so every
+  // failure path below offers it rather than leaving the shopper with an
+  // unpayable order.
+  const paymentFallback = useCallback(
+    (order, reason) => {
+      const base = `Your order (${order.order_id}) is created and nothing has been charged, but ${reason}`;
+      addMessage({
+        role: "agent",
+        content: order.payment_url
+          ? `${base}\n\nYou can still pay it here: ${order.payment_url}`
+          : `${base} Say "checkout" to try again.`,
+      });
+    },
+    [addMessage]
+  );
+
   const openRazorpay = useCallback(
     (order, onPaymentComplete) => {
-      if (!window.Razorpay) {
-        addMessage({ role: "agent", content: "Payment couldn't start — the checkout script didn't load." });
-        return;
-      }
-      const rzp = new window.Razorpay({
-        key: import.meta.env.VITE_RAZORPAY_KEY_ID,
-        order_id: order.order_id,
-        amount: order.amount,
-        currency: order.currency || "INR",
-        name: session?.assistantName || DEFAULT_ASSISTANT_NAME,
-        description: `Order for ${order.product_ids?.length || 0} item(s)`,
-        prefill: {
-          name: order.buyer?.name || "",
-          email: order.buyer?.email || "",
-          contact: order.buyer?.phone || "",
+      openRazorpayCheckout(
+        order,
+        {
+          onSuccess: onPaymentComplete,
+          onDismiss: () =>
+            addMessage({
+              role: "agent",
+              content:
+                "Payment window closed. Your order is still waiting — you can finish it from " +
+                "Your Orders, or say \"checkout\" to try again.",
+            }),
+          onUnavailable: (reason) => paymentFallback(order, reason),
         },
-        theme: { color: "#5e503f" },
-        handler: (paymentResponse) => {
-          onPaymentComplete(paymentResponse.razorpay_payment_id, order.order_id);
-        },
-        modal: {
-          ondismiss: () => {
-            addMessage({ role: "agent", content: "Payment window closed. Your order is still waiting — checkout again whenever you're ready." });
-          },
-        },
-      });
-      rzp.open();
+        { merchantName: session?.assistantName || DEFAULT_ASSISTANT_NAME }
+      );
     },
-    [addMessage, session]
+    [addMessage, session, paymentFallback]
   );
 
   const sendMessage = useCallback(
@@ -163,12 +170,23 @@ export default function useChat(
       try {
         const body = { email: session.email, text, thread_id: threadId || "default" };
         let data;
+        // Whether the stream ever produced an event. A turn that narrated
+        // itself and then died was RUNNING on the server — its tools may
+        // already have created a Razorpay order — so replaying it on /chat
+        // would risk charging the shopper twice. Only a stream that never
+        // started at all is safe to retry, and that is the only case the
+        // fallback was ever meant to cover.
+        let streamStarted = false;
         try {
-          data = await streamChat(body, (event) => setProgress(event));
-        } catch {
+          data = await streamChat(body, (event) => {
+            streamStarted = true;
+            setProgress(event);
+          });
+        } catch (streamError) {
+          setProgress(null);
+          if (streamStarted) throw streamError;
           // Streaming unavailable — fall back to the blocking endpoint so the
           // conversation still works, just without the narration.
-          setProgress(null);
           const res = await fetch(API_URL, {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -253,7 +271,8 @@ export default function useChat(
             sendMessage(`I've completed the payment (payment_id: ${paymentId}) for order ${orderId}. Please verify it.`);
           });
         }
-      } catch {
+      } catch (error) {
+        console.error("Chat turn failed", error);
         addMessage({
           role: "agent",
           content: "I'm having trouble connecting. Please try again.",
@@ -263,7 +282,7 @@ export default function useChat(
       setIsTyping(false);
       setProgress(null);
     },
-    [session, threadId, addMessage, openRazorpay, onProfileSynced]
+    [session, threadId, addMessage, openRazorpay, onProfileSynced, onSessionMissing]
   );
 
   const selectOption = useCallback((option) => sendMessage(option), [sendMessage]);
@@ -390,10 +409,37 @@ export default function useChat(
   const confirmOrder = useCallback(async () => {
     if (cart.length === 0) return;
     const total = cart.reduce((sum, item) => sum + (item.price || 0) * (item.quantity || 1), 0);
+
+    // The cart on screen is per-conversation and lives here; the server keeps
+    // one cart per account, and the two drift — a lost fire-and-forget POST, a
+    // thread switch, or a checkout that succeeded in a response this browser
+    // never received (which empties the server cart while this one still shows
+    // the lines). That last case left the shopper looking at a full cart while
+    // the agent answered "your cart is empty", with no way out. What's on
+    // screen is what they think they're buying, so it's pushed as the truth
+    // before the agent is asked to price it. Awaited, not fire-and-forget:
+    // checking out against the wrong cart is the whole bug.
+    try {
+      const res = await fetch(`${API_BASE}/cart/${session.email}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ cart }),
+      });
+      if (!res.ok) throw new Error(`cart sync failed (${res.status})`);
+    } catch (error) {
+      console.error("Could not sync the cart before checkout", error);
+      addMessage({ role: "user", content: `Checkout ${cart.length} item(s) — ₹${total.toLocaleString()}` });
+      addMessage({
+        role: "agent",
+        content: "I couldn't reach the server to confirm your cart, so I haven't started checkout. Nothing was charged — please try again.",
+      });
+      return;
+    }
+
     await sendMessage("Please check out my cart now.", {
       displayText: `Checkout ${cart.length} item(s) — ₹${total.toLocaleString()}`,
     });
-  }, [cart, sendMessage]);
+  }, [cart, sendMessage, session, addMessage]);
 
   return {
     messages,

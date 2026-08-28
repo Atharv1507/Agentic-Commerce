@@ -85,6 +85,20 @@ read how to get a key before it has one.
    garment it cannot send.
 7. `/order` prices the basket via `campaigns.price_basket`, creates the
    Razorpay order, and writes it to the ledger against the calling buyer's id.
+8. `/order` also returns a **`payment_url`** — a Razorpay payment link bound to
+   that order's amount. Without it the `purchase` capability stopped one step
+   short of a payment any third party could complete: a Razorpay `order_id` can
+   only be paid by the *browser* Checkout SDK, which needs a DOM and a human at
+   a card form. A headless buyer agent has neither, so it could negotiate,
+   price and create an order and then be stranded. The link closes that, and
+   the merchant's `key_secret` still never leaves this service.
+9. A payment link collects through an order **Razorpay creates itself**, so the
+   payment never attaches to the order in the ledger — `order.fetch` on our id
+   reports "created" forever no matter how completely the link was paid.
+   `verify_payment` therefore falls back to looking the link up by
+   `reference_id` (our order id) and always reports the id *this* ledger knows,
+   never Razorpay's internal one. Settling against the wrong id would mark an
+   unknown order paid and leave the real one showing unpaid revenue.
 
 ## Campaigns
 
@@ -112,8 +126,8 @@ the merchant margin, never overcharge a shopper.
 | DELETE | `/session/{session_id}` | buyer | Drop one negotiation's context (only ever the caller's own) |
 | POST | `/facets` | buyer | Non-LLM: colours/brands/fabrics/price bands that actually exist |
 | POST | `/stock` | buyer | Non-LLM: exact per-size stock for a list of product IDs |
-| POST | `/order` | buyer | Non-LLM: price, validate stock, create the Razorpay order, record it |
-| POST | `/payment/verify` | buyer | Non-LLM: confirm payment with Razorpay, settle the ledger |
+| POST | `/order` | buyer | Non-LLM: price, validate stock, create the Razorpay order + `payment_url`, record it |
+| POST | `/payment/verify` | buyer | Non-LLM: confirm payment on either rail (browser checkout or payment link), settle the ledger |
 | GET | `/merchant/analytics` | **merchant** | Revenue, AOV, revenue per buyer agent, attach rate, campaign impact |
 | GET | `/health` | none | Liveness, active session count, and whether demo keys are in use |
 
@@ -132,7 +146,8 @@ Seller Agent  ── OpenAI Chat Completions API  (tool-calling loop)
         ├── ChromaDB (in-memory, loaded from catalog.json)
         ├── campaigns.py  (deterministic pricing policy)
         ├── ledger.py → orders.json  (durable, per-buyer attribution)
-        └── razorpay SDK → Razorpay API  (order.create, payment.fetch)
+        └── razorpay SDK → Razorpay API  (order.create, payment_link.create,
+                                          payment.fetch, payment_link.all)
 
 Merchant's dashboard ──(X-Merchant-Key)──▶ GET /merchant/analytics
 ```

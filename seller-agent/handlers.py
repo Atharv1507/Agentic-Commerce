@@ -1,5 +1,6 @@
 import os
 import logging
+import time
 from typing import Any, Optional
 
 import razorpay
@@ -17,6 +18,80 @@ load_dotenv()
 razorpay_client = razorpay.Client(
     auth=(os.getenv("RAZORPAY_KEY_ID"), os.getenv("RAZORPAY_KEY_SECRET"))
 )
+
+
+# How long a buyer agent has to get the order paid through its payment link.
+# Long enough for a human to be asked and to act; short enough that a stale
+# link isn't a live charge sitting around forever. Razorpay requires at least
+# 15 minutes.
+PAYMENT_LINK_TTL_SECONDS = 24 * 60 * 60
+
+
+def create_payment_link(
+    order: dict[str, Any],
+    buyer_name: str,
+    buyer_email: str,
+    buyer_phone: str,
+    unit_count: int,
+) -> dict[str, Any]:
+    """Create a hosted payment page for an order, and return its URL.
+
+    Why this exists: `razorpay_client.order.create` produces an id that can
+    only be paid by something running Razorpay's *browser* SDK — which needs a
+    DOM and a human to enter card details. A headless buyer agent has neither,
+    so until now the `purchase` capability this merchant advertises stopped one
+    step short of a payment any third party could actually complete. A payment
+    link closes that: the merchant hands back a URL, and whoever actually holds
+    the money (the agent's own user, typically) opens it. The merchant's
+    key_secret never leaves this service and the buyer agent still receives no
+    payment credential of any kind.
+
+    `reference_id` is set to our order id so the link can be found from the
+    order later — see `verify_payment`, which needs it because a link's payment
+    does NOT attach to the order created above. Razorpay generates the link its
+    own internal order, so `order.fetch` on our id stays "created" forever even
+    after the link is paid.
+
+    Args:
+        order: The Razorpay order this link should collect for.
+        buyer_name: Shopper name, prefilled on the hosted page.
+        buyer_email: Shopper email, prefilled.
+        buyer_phone: Shopper phone, prefilled.
+        unit_count: How many units the order covers, for the description.
+
+    Returns:
+        Dict with `payment_url` and `payment_link_id`, or `{}` if the link
+        could not be created. Never raises: an order that exists without a link
+        is still payable in a browser, so a link failure must not take the
+        whole checkout down with it.
+    """
+    try:
+        link = razorpay_client.payment_link.create(
+            {
+                "amount": order["amount"],
+                "currency": order["currency"],
+                "accept_partial": False,
+                # Ties the link back to the order the ledger knows about.
+                "reference_id": order["id"],
+                "description": f"Order {order['id']} — {unit_count} item(s)",
+                "customer": {
+                    "name": buyer_name or "",
+                    "email": buyer_email or "",
+                    "contact": buyer_phone or "",
+                },
+                # The buyer agent decides how to deliver the link to its user.
+                # The merchant spamming the shopper directly is not its call.
+                "notify": {"sms": False, "email": False},
+                "reminder_enable": False,
+                "expire_by": int(time.time()) + PAYMENT_LINK_TTL_SECONDS,
+                "notes": {"order_id": order["id"]},
+            }
+        )
+        logger.info(f"Payment link {link['id']} created for {order['id']}: {link['short_url']}")
+        return {"payment_url": link["short_url"], "payment_link_id": link["id"]}
+    except Exception as e:
+        logger.error(f"Could not create a payment link for {order['id']}: {e}")
+        return {}
 
 
 def check_stock(product_id: str, size: Optional[str] = None) -> dict[str, Any]:
@@ -296,6 +371,13 @@ def create_order(
             f"subtotal=Rs {pricing['subtotal_inr']} discount=Rs {pricing['discount_inr']} "
             f"charged=Rs {total_amount}"
         )
+        # A second rail to the same order, for a caller that has no browser.
+        # Additive: the order id above is unchanged and still the primary key
+        # everywhere, so the existing browser checkout is untouched.
+        link = create_payment_link(
+            order, buyer_name, buyer_email, buyer_phone, len(product_ids)
+        )
+
         result = {
             "order_id": order["id"],
             # Razorpay works in paise and the payment SDK is handed `amount`
@@ -321,6 +403,20 @@ def create_order(
                 "phone": buyer_phone,
                 "address": buyer_address,
             },
+            # Present unless Razorpay refused the link. A buyer agent with no
+            # browser pays here; one driving a browser can ignore it, or fall
+            # back to it when the checkout SDK won't open.
+            **link,
+            "payment_note": (
+                "Two ways to pay this order, both settling the same `order_id`: open "
+                "`payment_url` (works anywhere, no SDK or credentials needed), or pass "
+                "`order_id` to Razorpay's browser Checkout with the merchant's public "
+                "key_id. Either way, confirm with POST /payment/verify before treating "
+                "the order as paid."
+                if link
+                else "This order has no payment link; it must be paid through Razorpay's "
+                "browser Checkout using `order_id`."
+            ),
         }
         if pricing["applied_campaign"]:
             # Surfaced as `message` so the buyer's audit trail picks it up
@@ -337,46 +433,158 @@ def create_order(
         return {"error": "order_creation_failed"}
 
 
+PAID_STATUSES = ("captured", "paid")
+
+
+def _split_ids(*candidates: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    """Sort a jumble of Razorpay ids into (order id, payment id) by prefix.
+
+    Razorpay ids are prefixed — `order_`, `pay_`, `plink_` — so which is which
+    is knowable rather than guessable. The previous version trusted the
+    argument positions and merely commented that a buyer agent "is not a
+    reliable router between them"; this stops it from mattering.
+
+    Returns:
+        (order_id, payment_id), either of which may be None.
+    """
+    order_id = payment_id = None
+    for value in candidates:
+        if not value:
+            continue
+        if value.startswith("pay_"):
+            payment_id = payment_id or value
+        elif value.startswith("order_"):
+            order_id = order_id or value
+    return order_id, payment_id
+
+
+def _payment_link_status(order_id: str) -> dict[str, Any]:
+    """Ask whether the payment link for an order has been paid.
+
+    Needed because a payment link collects through an order Razorpay creates
+    *itself*: the link's payment is attached to that internal order, never to
+    the one this merchant created. So `order.fetch(our_id)` reports "created"
+    forever no matter how completely the link was paid, and a buyer agent that
+    paid the only way it could would be told its money never arrived.
+
+    Args:
+        order_id: The merchant's order id, used as the link's `reference_id`.
+
+    Returns:
+        The link's status and its payment id when paid, or `{}` when there is
+        no link for this order (or the lookup failed — an unknown answer must
+        not read as an unpaid one).
+    """
+    try:
+        found = razorpay_client.payment_link.all({"reference_id": order_id})
+    except Exception as e:
+        logger.error(f"Payment link lookup failed for {order_id}: {e}")
+        return {}
+
+    links = found.get("payment_links") or []
+    if not links:
+        return {}
+
+    # Newest first: an expired or cancelled link may have been reissued.
+    links.sort(key=lambda l: l.get("created_at") or 0, reverse=True)
+    paid = next((l for l in links if l.get("status") == "paid"), None)
+    link = paid or links[0]
+
+    payments = link.get("payments") or []
+    return {
+        "status": "paid" if link.get("status") == "paid" else link.get("status"),
+        "payment_id": next((p.get("payment_id") for p in payments if p.get("payment_id")), None),
+        "payment_link_id": link.get("id"),
+        "amount_paid": link.get("amount_paid"),
+    }
+
+
 def verify_payment(order_id: str, payment_id: Optional[str] = None) -> dict[str, Any]:
     """Confirm with Razorpay whether an order has actually been paid.
 
-    Prefers looking up the payment itself over the order aggregate, since the
-    caller may pass the two ids swapped — a buyer agent is handed both in the
-    same breath and is not a reliable router between them.
+    Checks both rails a buyer can pay on, in cost order: the payment itself if
+    an id was given, then the order, then the order's payment link. The link is
+    checked last because it costs an extra API call and only matters for a
+    caller with no browser — but it must be checked, or a headless buyer agent
+    can never be told its payment succeeded.
 
     Read-only against Razorpay: it never captures, refunds or moves money, so
     it is safe to call more than once. Idempotency of the *consequences* of a
     confirmation is the caller's business, not this function's.
 
     Args:
-        order_id: The Razorpay order id.
+        order_id: The Razorpay order id. May be passed swapped with payment_id;
+            both are re-sorted by prefix.
         payment_id: The Razorpay payment id, when known.
 
     Returns:
-        Dict with the payment status, or `{"error": "verification_failed"}`.
+        Dict with the payment status. `order_id` is always the order the caller
+        asked about — the one in this merchant's ledger — never the internal
+        order a payment link collected through, which would settle nothing.
+        Includes `paid_via` so the merchant can see which rail was used.
+        `{"error": "verification_failed"}` if Razorpay could not be reached.
     """
+    resolved_order, resolved_payment = _split_ids(order_id, payment_id)
+    # An id with no recognised prefix (an older caller, or a test fixture)
+    # keeps its positional meaning rather than being dropped. One that IS
+    # recognised is never re-used in the other slot — that's the whole point of
+    # sorting them, and treating a `pay_` id as the order to settle would put
+    # the wrong key in the ledger.
+    if not resolved_order and order_id and not order_id.startswith("pay_"):
+        resolved_order = order_id
+    if not resolved_payment and payment_id and not payment_id.startswith("order_"):
+        resolved_payment = payment_id
+
     try:
-        if payment_id:
-            payment = razorpay_client.payment.fetch(payment_id)
-            logger.info(f"Payment verified for {payment_id}: {payment['status']}")
+        if resolved_payment:
+            payment = razorpay_client.payment.fetch(resolved_payment)
+            logger.info(f"Payment verified for {resolved_payment}: {payment['status']}")
             return {
-                "order_id": payment.get("order_id", order_id),
-                "payment_id": payment_id,
+                # The caller's order id wins when we have one: a link payment's
+                # own order_id is Razorpay's internal one, and settling the
+                # ledger against that would mark nothing paid.
+                "order_id": resolved_order or payment.get("order_id"),
+                "payment_id": resolved_payment,
                 "status": payment["status"],
                 "amount": payment["amount"],
                 "amount_inr": payment["amount"] // 100,
                 "amount_note": f"Quote Rs {payment['amount'] // 100:,} — `amount` is in paise.",
+                "paid_via": (
+                    "checkout" if payment.get("order_id") == resolved_order else "payment_link"
+                ),
             }
 
-        order = razorpay_client.order.fetch(order_id)
-        logger.info(f"Payment verified for {order_id}: {order['status']}")
-        return {
+        order = razorpay_client.order.fetch(resolved_order)
+        result = {
             "order_id": order["id"],
             "status": order["status"],
             "amount": order["amount"],
             "amount_inr": order["amount"] // 100,
             "amount_note": f"Quote Rs {order['amount'] // 100:,} — `amount` is in paise.",
         }
+        if result["status"] in PAID_STATUSES:
+            # Only claimed once something is actually paid — naming a rail on an
+            # unpaid order reads as a settlement that hasn't happened.
+            result["paid_via"] = "checkout"
+            logger.info(f"Payment verified for {resolved_order}: {result['status']}")
+            return result
+
+        # Not paid in a browser. It may well have been paid on the link.
+        link = _payment_link_status(order["id"])
+        if link.get("status") in PAID_STATUSES:
+            logger.info(
+                f"Payment verified for {order['id']} via payment link "
+                f"{link.get('payment_link_id')}: paid"
+            )
+            return {**result, **link, "order_id": order["id"], "paid_via": "payment_link"}
+
+        logger.info(
+            f"Payment not verified for {order['id']}: order={result['status']} "
+            f"link={link.get('status') or 'none'}"
+        )
+        if link:
+            result["payment_link_status"] = link.get("status")
+        return result
     except Exception as e:
         logger.error(f"Payment verification error: {e}")
         return {"error": "verification_failed"}

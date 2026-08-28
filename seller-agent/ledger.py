@@ -104,6 +104,8 @@ def record_order(
     currency: str,
     lines: list[dict[str, Any]],
     applied_campaign: Optional[dict[str, Any]] = None,
+    payment_url: Optional[str] = None,
+    payment_link_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Persist a newly created order.
 
@@ -120,6 +122,10 @@ def record_order(
             `purpose` ("primary" or "complement") so cross-sell attach rate is
             a real measurement instead of a guess at "orders with >1 item".
         applied_campaign: The winning campaign, or None.
+        payment_url: The hosted payment page for this order, when one was
+            created. Recorded so the merchant can re-hand it to a buyer agent
+            that lost it, without minting a second link for the same order.
+        payment_link_id: Razorpay's id for that link.
 
     Returns:
         The stored record.
@@ -136,6 +142,13 @@ def record_order(
         "applied_campaign": applied_campaign,
         "created_at": datetime.now().timestamp(),
         "paid_at": None,
+        "payment_url": payment_url,
+        "payment_link_id": payment_link_id,
+        # Which rail settled it, filled in by mark_paid. Distinguishes a sale
+        # a headless buyer agent closed on its own from one that needed a
+        # browser — the number that says whether agent-to-agent checkout
+        # actually works.
+        "paid_via": None,
     }
     _orders[order_id] = record
     _flush()
@@ -146,7 +159,9 @@ def record_order(
     return record
 
 
-def mark_paid(order_id: str, payment_id: Optional[str] = None) -> Optional[dict[str, Any]]:
+def mark_paid(
+    order_id: str, payment_id: Optional[str] = None, paid_via: Optional[str] = None
+) -> Optional[dict[str, Any]]:
     """Flip an order to paid once payment is verified.
 
     Merged onto the existing record rather than replacing it — the line items,
@@ -169,8 +184,9 @@ def mark_paid(order_id: str, payment_id: Optional[str] = None) -> Optional[dict[
     record["status"] = "paid"
     record["payment_id"] = payment_id
     record["paid_at"] = datetime.now().timestamp()
+    record["paid_via"] = paid_via
     _flush()
-    logger.info(f"Ledger: {order_id} marked paid")
+    logger.info(f"Ledger: {order_id} marked paid via {paid_via or 'unknown'}")
     return record
 
 

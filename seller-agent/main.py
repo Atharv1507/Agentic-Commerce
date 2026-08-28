@@ -400,6 +400,8 @@ async def create_order_route(
             currency=result["currency"],
             lines=result["lines"],
             applied_campaign=result.get("applied_campaign"),
+            payment_url=result.get("payment_url"),
+            payment_link_id=result.get("payment_link_id"),
         )
     return result
 
@@ -425,7 +427,17 @@ async def verify_payment_route(
     if result.get("status") in ("captured", "paid"):
         # Keyed off Razorpay's own answer rather than the caller's claim: a
         # buyer agent saying "this is paid" is not evidence that it is.
-        ledger.mark_paid(result.get("order_id") or request.order_id, result.get("payment_id"))
+        #
+        # The id has to be the one in THIS ledger. A payment made on a payment
+        # link belongs to an order Razorpay created internally, so settling
+        # against the payment's own order_id would mark an order the shop has
+        # never heard of and leave the real one showing unpaid revenue.
+        # verify_payment already resolves this; the fallback is belt-and-braces.
+        ledger.mark_paid(
+            result.get("order_id") or request.order_id,
+            result.get("payment_id"),
+            paid_via=result.get("paid_via"),
+        )
     return result
 
 
@@ -528,8 +540,21 @@ async def agent_card() -> dict[str, Any]:
                 ),
             },
             {
+                "name": "headless_payment",
+                "summary": (
+                    "Every order comes back with a `payment_url`: a hosted payment page "
+                    "you can complete, or hand to your user, with no browser SDK, no "
+                    "card data passing through you, and no credentials from either side. "
+                    "This is how a buyer agent with no human at a screen actually pays."
+                ),
+            },
+            {
                 "name": "payment_verification",
-                "summary": "Confirm a completed payment against Razorpay's own record.",
+                "summary": (
+                    "Confirm a completed payment against Razorpay's own record. Checks "
+                    "both rails — browser checkout and payment link — so a link you paid "
+                    "is reported as paid."
+                ),
             },
         ],
         "auth": {
@@ -567,12 +592,21 @@ async def agent_card() -> dict[str, Any]:
                 "endpoint": "POST /order",
                 "description": (
                     "Creates the Razorpay order. Re-validates stock and applies any "
-                    "qualifying campaign. Read `amount_inr` for rupees; `amount` is paise."
+                    "qualifying campaign. Read `amount_inr` for rupees; `amount` is paise. "
+                    "Returns `payment_url` — open or forward it to pay with no browser "
+                    "SDK and no credentials — as well as `order_id`, for a caller that "
+                    "IS driving a browser and wants Razorpay's Checkout with the "
+                    "merchant's public key_id. Both settle the same order."
                 ),
                 "request_schema": OrderRequest.model_json_schema(),
             },
             "payment_verification": {
                 "endpoint": "POST /payment/verify",
+                "description": (
+                    "Send the `order_id` from /order. Reports `status` and `paid_via` "
+                    "(\"checkout\" or \"payment_link\"). Read-only and safe to repeat; "
+                    "treat an order as paid only once this says so."
+                ),
                 "request_schema": VerifyPaymentRequest.model_json_schema(),
             },
             "end_session": {

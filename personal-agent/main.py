@@ -28,7 +28,12 @@ from config import (
 )
 from schemas import TOOLS_SCHEMA
 from context import durable_hints, normalize_gender, normalize_size
-from handlers import PREFERENCE_FIELDS, execute_tool, extract_structured_payload
+from handlers import (
+    PREFERENCE_FIELDS,
+    execute_tool,
+    extract_structured_payload,
+    verify_payment as verify_order_payment,
+)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -673,6 +678,49 @@ async def get_orders(email: str) -> dict[str, Any]:
     return {"status": "ok", "orders": records}
 
 
+@app.post("/session/{email}/orders/{order_id}/verify")
+async def verify_order(
+    email: str, order_id: str, body: Optional[dict[str, Any]] = None
+) -> dict[str, Any]:
+    """Confirm payment for one order and settle it in the session's ledger.
+
+    Exists so the receipts page can finish a payment the shopper abandoned
+    without going through the chat. The chat path works by describing the
+    payment to the model in a sentence and letting it decide to call the
+    verify tool; that is the right shape for a conversation and the wrong shape
+    for a button, which knows exactly which order it just paid and should not
+    depend on the model reading a sentence correctly to record it.
+
+    Same underlying function as the tool, so both paths share the
+    already-paid short circuit and write the same record.
+
+    Args:
+        email: User's email address.
+        order_id: The Razorpay order id being confirmed.
+        body: Optional {"payment_id": ...} from the checkout SDK's handler.
+
+    Returns:
+        Dict with the verification result and the updated order record.
+    """
+    session = _require_session(email.lower())
+
+    if order_id not in (session.get("orders") or {}):
+        # Only orders this account actually placed. Otherwise the route is a
+        # way to ask the merchant about any order id at all.
+        raise HTTPException(status_code=404, detail="Order not found")
+
+    payment_id = (body or {}).get("payment_id")
+    result = verify_order_payment(session, order_id, payment_id)
+    save_sessions(sessions)
+
+    record = (session.get("orders") or {}).get(order_id) or {}
+    return {
+        "status": "ok",
+        "payment": result,
+        "order": {"order_id": order_id, **record},
+    }
+
+
 @app.get("/session/{email}/logs")
 async def get_logs(email: str, limit: int = 50) -> dict[str, Any]:
     """Return this account's audit trail — every tool call the agent made.
@@ -737,6 +785,63 @@ async def add_to_cart(email: str, item: dict[str, Any]) -> dict[str, Any]:
 
     save_sessions(sessions)
     logger.info(f"Cart updated for {email}: added {item.get('id')} size={size or '-'}")
+
+    return {"status": "ok", "cart": cart}
+
+
+@app.put("/cart/{email}")
+async def replace_cart(email: str, body: dict[str, Any]) -> dict[str, Any]:
+    """Overwrite the session cart with the client's copy of it.
+
+    The browser keeps a cart per conversation and the server keeps one per
+    account, so the two can legitimately disagree: switching chats changes what
+    the shopper is looking at without the server hearing about it, a fire-and-
+    forget POST /cart can be lost, and a successful checkout empties the server
+    cart in a response the browser may never receive. That last one is the bug
+    this exists for — the shopper was left staring at a cart the agent insisted
+    was empty, with no way to check out and no way to clear it.
+
+    The cart on screen is the one the shopper believes they are buying, so it
+    wins. Called right before checkout rather than on a timer, so the lines the
+    agent prices are exactly the lines that were displayed.
+
+    Args:
+        email: User's email address.
+        body: {"cart": [line, ...]} — the client's full cart.
+
+    Returns:
+        Dict with the stored cart.
+    """
+    email = email.lower()
+
+    if email not in sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+
+    incoming = body.get("cart")
+    if not isinstance(incoming, list):
+        raise HTTPException(status_code=400, detail="Expected a 'cart' list")
+
+    cart: list[dict[str, Any]] = []
+    for entry in incoming:
+        if not isinstance(entry, dict) or not entry.get("id"):
+            continue
+        line = dict(entry)
+        size = normalize_size(line.get("size"))
+        if size:
+            line["size"] = size
+        line["quantity"] = max(1, int(line.get("quantity") or 1))
+        # Merge rather than trust the client not to send the same (product,
+        # size) twice — checkout prices one line per pair.
+        existing = next((e for e in cart if _same_line(e, line["id"], size)), None)
+        if existing:
+            existing["quantity"] += line["quantity"]
+        else:
+            cart.append(line)
+
+    session = sessions[email]
+    session["cart"] = cart
+    save_sessions(sessions)
+    logger.info(f"Cart replaced for {email}: {len(cart)} line(s) from the client")
 
     return {"status": "ok", "cart": cart}
 

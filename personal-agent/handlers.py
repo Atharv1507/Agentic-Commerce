@@ -770,6 +770,7 @@ def checkout_cart(session: dict[str, Any], confirm_over_limit: bool = False) -> 
     # separately re-fetched from Razorpay.
     session.setdefault("orders", {})[order["order_id"]] = {
         "status": "created",
+        "payment_url": order.get("payment_url"),
         "amount_inr": charged_inr,
         "subtotal_inr": order.get("subtotal_inr", amount),
         "discount_inr": order.get("discount_inr", 0),
@@ -796,6 +797,12 @@ def checkout_cart(session: dict[str, Any], confirm_over_limit: bool = False) -> 
             f"for the payment SDK — never state it as rupees."
         ),
         "currency": order.get("currency", "INR"),
+        # The merchant's browser-free payment rail for this same order. Handed
+        # to the frontend as a fallback for when the checkout SDK won't open —
+        # an order the shopper can't pay is the failure this guards against —
+        # and the reason an AI buyer agent with no browser can transact here at
+        # all. Never a credential: it is a URL bound to this one order's amount.
+        "payment_url": order.get("payment_url"),
         "product_ids": product_ids,
         "lines": lines,
         "buyer": buyer,

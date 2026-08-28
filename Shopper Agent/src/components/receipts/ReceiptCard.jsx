@@ -1,7 +1,8 @@
 import { motion } from "framer-motion";
-import { Package } from "lucide-react";
+import { Package, CreditCard, Loader2 } from "lucide-react";
 import { Card } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
 import { orderNumber, formatOrderDate } from "./receiptUtils";
 
 function StatusBadge({ status }) {
@@ -13,10 +14,11 @@ function StatusBadge({ status }) {
   );
 }
 
-export default function ReceiptCard({ order, layoutId, onOpen }) {
+export default function ReceiptCard({ order, layoutId, onOpen, onPay, paying, note }) {
   const lines = order.lines || [];
   const preview = lines[0]?.name || "Order";
   const extra = lines.length - 1;
+  const pending = order.status !== "paid";
 
   return (
     <motion.div layoutId={layoutId} whileHover={{ y: -4 }} transition={{ duration: 0.2 }}>
@@ -50,6 +52,38 @@ export default function ReceiptCard({ order, layoutId, onOpen }) {
             ₹{(order.amount_inr || 0).toLocaleString()}
           </span>
         </div>
+
+        {/* An unpaid order is the one thing on this page that still needs
+            doing, so it gets an action right on the card — the shopper
+            shouldn't have to open a receipt to discover they can finish it.
+            stopPropagation because the whole card opens the detail view. */}
+        {note && (
+          <p className={note.tone === "error" ? "text-xs text-destructive" : "text-xs text-muted-foreground"}>
+            {note.text}
+          </p>
+        )}
+
+        {pending && onPay && (
+          <Button
+            size="sm"
+            className="w-full gap-1.5"
+            disabled={paying}
+            onClick={(e) => {
+              e.stopPropagation();
+              onPay();
+            }}
+          >
+            {paying ? (
+              <>
+                <Loader2 className="size-3.5 animate-spin" /> Opening payment…
+              </>
+            ) : (
+              <>
+                <CreditCard className="size-3.5" /> Complete payment
+              </>
+            )}
+          </Button>
+        )}
       </Card>
     </motion.div>
   );

@@ -1,8 +1,9 @@
 import { useEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { motion, AnimatePresence } from "framer-motion";
-import { ArrowLeft, X, PackageOpen, Download, Truck } from "lucide-react";
+import { ArrowLeft, X, PackageOpen, Download, Truck, CreditCard, Loader2, ExternalLink } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import { cn } from "@/lib/utils";
 import useOrders from "@/hooks/useOrders";
 import ReceiptCard from "./ReceiptCard";
 import { orderNumber, formatOrderDate } from "./receiptUtils";
@@ -14,8 +15,9 @@ import { downloadReceipt } from "./downloadReceipt";
 // reason the chat's product results get a grid instead of a list.
 // The expand interaction mirrors ProductGrid's click-to-lightbox pattern:
 // a shared framer-motion layoutId carries the card into a focused view.
-function ReceiptDetail({ order, onDownload, onTrack }) {
+function ReceiptDetail({ order, onDownload, onTrack, onPay, paying, note }) {
   const lines = order.lines || [];
+  const pending = order.status !== "paid";
 
   return (
     <motion.div
@@ -71,20 +73,65 @@ function ReceiptDetail({ order, onDownload, onTrack }) {
         </span>
       </div>
 
-      <div className="flex gap-2 px-6 pb-6">
-        <Button variant="outline" className="flex-1 gap-2" onClick={onDownload}>
-          <Download className="size-4" /> Download receipt
-        </Button>
-        <Button className="flex-1 gap-2" onClick={onTrack}>
-          <Truck className="size-4" /> Track order
-        </Button>
+      {note && (
+        <p
+          className={cn(
+            "px-6 pb-1 text-xs",
+            note.tone === "error" ? "text-destructive" : "text-muted-foreground"
+          )}
+        >
+          {note.text}
+        </p>
+      )}
+
+      <div className="flex flex-col gap-2 px-6 pb-6">
+        <div className="flex gap-2">
+          <Button variant="outline" className="flex-1 gap-2" onClick={onDownload}>
+            <Download className="size-4" /> Download receipt
+          </Button>
+          {/* Tracking an order nobody has paid for tells the shopper nothing,
+              so the pending state offers the action that actually moves it
+              forward instead. Same order at the merchant, same amount — this
+              reopens payment for it rather than creating a second one. */}
+          {pending ? (
+            <Button className="flex-1 gap-2" disabled={paying} onClick={onPay}>
+              {paying ? (
+                <>
+                  <Loader2 className="size-4 animate-spin" /> Opening payment…
+                </>
+              ) : (
+                <>
+                  <CreditCard className="size-4" /> Pay ₹{(order.amount_inr || 0).toLocaleString()}
+                </>
+              )}
+            </Button>
+          ) : (
+            <Button className="flex-1 gap-2" onClick={onTrack}>
+              <Truck className="size-4" /> Track order
+            </Button>
+          )}
+        </div>
+
+        {/* The merchant's browser-free payment page for this same order. Shown
+            as a way out when the in-app modal won't open at all — an order the
+            shopper can't pay is the failure worth a second route. */}
+        {pending && order.payment_url && (
+          <a
+            href={order.payment_url}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="inline-flex items-center justify-center gap-1.5 text-xs text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
+          >
+            <ExternalLink className="size-3" /> Or pay on the shop's secure page
+          </a>
+        )}
       </div>
     </motion.div>
   );
 }
 
 export default function ReceiptsPage({ session, onClose }) {
-  const { orders } = useOrders(session, true);
+  const { orders, payOrder, payingId, payErrors } = useOrders(session, true);
   const [selectedIndex, setSelectedIndex] = useState(null);
   const [tracking, setTracking] = useState(false);
   const isOpen = selectedIndex !== null;
@@ -154,6 +201,9 @@ export default function ReceiptsPage({ session, onClose }) {
                   order={order}
                   layoutId={`receipt-card-${order.order_id}`}
                   onOpen={() => setSelectedIndex(i)}
+                  onPay={() => payOrder(order)}
+                  paying={payingId === order.order_id}
+                  note={payErrors[order.order_id]}
                 />
               </motion.div>
             ))}
@@ -184,6 +234,9 @@ export default function ReceiptsPage({ session, onClose }) {
                       order={selected}
                       onDownload={() => downloadReceipt(selected, session?.assistantName)}
                       onTrack={() => setTracking(true)}
+                      onPay={() => payOrder(selected)}
+                      paying={payingId === selected.order_id}
+                      note={payErrors[selected.order_id]}
                     />
                   )}
                 </AnimatePresence>
