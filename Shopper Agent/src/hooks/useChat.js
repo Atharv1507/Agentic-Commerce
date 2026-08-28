@@ -225,6 +225,15 @@ export default function useChat(
           addMessage({ role: "agent", content: response });
         }
 
+        // Merchant campaigns get their own message, above the cross-sell.
+        // The backend only forwards offers the shop said actually apply, so
+        // anything arriving here is real and already worded by the merchant —
+        // rendered verbatim rather than reformatted, since the saving is the
+        // shop's promise to keep, not ours to restate.
+        if (Array.isArray(data.offers) && data.offers.length > 0) {
+          addMessage({ role: "agent", type: "offers", offers: data.offers });
+        }
+
         // Cross-sell lands in its own message so it reads as a suggestion
         // rather than as part of what the user actually asked for.
         if (Array.isArray(data.complements) && data.complements.length > 0) {

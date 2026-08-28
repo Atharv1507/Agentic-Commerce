@@ -1,4 +1,5 @@
 import { motion } from "framer-motion";
+import { BadgePercent } from "lucide-react";
 import ChatMessage from "./ChatMessage";
 import ChatInput from "./ChatInput";
 import OptionChips from "./OptionChips";
@@ -89,6 +90,24 @@ export default function ChatWindow({
                     <div className="flex flex-col gap-2">
                       <ChatMessage message={{ role: "agent", content: msg.content }} />
                       <OptionChips options={msg.options} onSelect={onOptionSelect} />
+                    </div>
+                  ) : msg.type === "offers" ? (
+                    <div className="flex flex-col gap-2 px-4">
+                      {/* Rendered as the shop's own voice, distinct from the
+                          agent's bubbles: it's the merchant's promise, and it
+                          shouldn't read as the assistant inventing a deal. */}
+                      <p className="text-xs tracking-widest text-muted-foreground/70 uppercase">
+                        Offer from the shop
+                      </p>
+                      {msg.offers.map((offer) => (
+                        <div
+                          key={offer.id}
+                          className="flex items-start gap-2.5 rounded-2xl border border-border bg-card px-4 py-3"
+                        >
+                          <BadgePercent className="mt-0.5 size-4 shrink-0 text-sand" />
+                          <p className="text-sm text-foreground">{offer.description}</p>
+                        </div>
+                      ))}
                     </div>
                   ) : msg.type === "products" ? (
                     <div className="flex flex-col gap-3">

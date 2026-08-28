@@ -13,6 +13,7 @@ import SettingsModal from "@/components/settings/SettingsModal";
 import ActivityLogPanel from "@/components/activity/ActivityLogPanel";
 import SpendLimitDialog from "@/components/checkout/SpendLimitDialog";
 import ReceiptsPage from "@/components/receipts/ReceiptsPage";
+import MerchantDashboard from "@/components/merchant/MerchantDashboard";
 import { useState } from "react";
 
 function App() {
@@ -35,6 +36,7 @@ function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [activityOpen, setActivityOpen] = useState(false);
   const [receiptsOpen, setReceiptsOpen] = useState(false);
+  const [merchantOpen, setMerchantOpen] = useState(false);
 
   const enterChatWithThread = (id) => {
     switchThread(id);
@@ -81,6 +83,7 @@ function App() {
               onOpenSettings={() => setSettingsOpen(true)}
               onOpenActivityLog={() => setActivityOpen(true)}
               onOpenReceipts={() => setReceiptsOpen(true)}
+              onOpenMerchant={() => setMerchantOpen(true)}
               onAddToCart={chat.addToCart}
               userSize={session?.size}
             />
@@ -143,6 +146,12 @@ function App() {
             <AnimatePresence>
               {receiptsOpen && (
                 <ReceiptsPage key="receipts" session={session} onClose={() => setReceiptsOpen(false)} />
+              )}
+            </AnimatePresence>
+
+            <AnimatePresence>
+              {merchantOpen && (
+                <MerchantDashboard key="merchant" onClose={() => setMerchantOpen(false)} />
               )}
             </AnimatePresence>
           </motion.div>

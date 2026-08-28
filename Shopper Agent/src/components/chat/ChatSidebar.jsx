@@ -9,6 +9,7 @@ import {
   Settings,
   History,
   Receipt,
+  BarChart3,
   Plus,
   Check,
   Trash2,
@@ -95,6 +96,7 @@ export default function ChatSidebar({
   onOpenSettings,
   onOpenActivityLog,
   onOpenReceipts,
+  onOpenMerchant,
   onAddToCart,
   userSize,
 }) {
@@ -215,6 +217,18 @@ export default function ChatSidebar({
           title="Activity log"
         >
           <History className="size-4" />
+        </button>
+        {/* Developer affordance, not a shopper feature: it opens the MERCHANT's
+            books, which a real shopper would never see. Kept as a plain icon
+            button here so it's reachable for the demo without dressing it up
+            as part of the shopping experience. */}
+        <button
+          onClick={onOpenMerchant}
+          className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
+          aria-label="Merchant analytics (developer)"
+          title="Merchant analytics (developer)"
+        >
+          <BarChart3 className="size-4" />
         </button>
       </div>
     </motion.aside>
