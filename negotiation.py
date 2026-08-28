@@ -1,0 +1,655 @@
+"""Constraint-checked negotiation between the Personal Agent and the Seller Agent.
+
+The Personal Agent used to forward one query to the Seller Agent and relay
+whatever came back. That let plainly wrong results reach the shopper — ₹1,239
+watches for a ₹10,000 budget, the wrong colour, the same product twice.
+
+This module makes the exchange a bounded loop instead: brief the seller, verify
+every returned product against the shopper's constraints *in code*, and if too
+few survive, tell the seller exactly what was wrong and ask again. Verification
+is deterministic, so no amount of confident seller prose can pass off a result
+that breaks a constraint.
+"""
+
+import logging
+import re
+from typing import Any, Callable, Optional
+
+import httpx
+
+from config import SELLER_AGENT_URL
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+# How many times the Personal Agent may push back before it gives up and
+# reports the shortfall honestly. Three is enough to walk the relaxation ladder
+# below without leaving the shopper waiting indefinitely.
+MAX_SELLER_ROUNDS = 3
+# A cross-sell is a nice-to-have. Grinding through the full ladder for one adds
+# latency to every search for something the shopper didn't even ask about.
+MAX_COMPLEMENT_ROUNDS = 2
+DEFAULT_MIN_RESULTS = 3
+
+# How much of the budget each round is willing to accept, as a ratio of the
+# stated budget. Round 1 asks for what the shopper actually wants; later rounds
+# widen the floor rather than the ceiling, because "cheaper than asked" is the
+# failure mode we're fixing.
+BUDGET_FLOOR_RATIOS = [0.80, 0.55, 0.30]
+PREMIUM_FLOOR_RATIOS = [0.85, 0.70, 0.55]
+# Only a shopper who signalled flexibility gets shown anything over budget.
+FLEXIBLE_CEILING_RATIOS = [1.10, 1.20, 1.35]
+# How far the floor of an explicitly chosen price band eases per round. The
+# ceiling never moves: the shopper picked that band deliberately.
+BAND_FLOOR_RELAXATION = [1.0, 0.85, 0.7]
+
+# Colour families, so "grey" accepts charcoal and slate. Deliberately a local
+# copy rather than an import from the seller service — these are two separate
+# processes and the Personal Agent must be able to check colour without
+# trusting the seller to have applied it.
+COLOR_GROUPS = {
+    "grey": {"grey", "gray", "charcoal", "slate", "graphite", "gunmetal", "steel"},
+    "silver": {"silver", "chrome", "metallic", "platinum"},
+    "black": {"black", "jet", "onyx", "ebony"},
+    "white": {"white", "ivory", "cream", "offwhite"},
+    "blue": {"blue", "navy", "teal", "turquoise", "cobalt", "indigo", "denim"},
+    "green": {"green", "olive", "mint", "sage", "emerald"},
+    "red": {"red", "maroon", "burgundy", "wine", "crimson", "rust"},
+    "pink": {"pink", "rose", "blush", "fuchsia", "magenta"},
+    "brown": {"brown", "tan", "beige", "khaki", "camel", "coffee", "taupe"},
+    "yellow": {"yellow", "mustard", "gold", "golden", "lemon"},
+    "purple": {"purple", "lavender", "violet", "lilac", "mauve"},
+    "orange": {"orange", "peach", "coral", "apricot"},
+}
+# A grey request should accept silver before it accepts yellow.
+ADJACENT_COLORS = {
+    ("grey", "silver"),
+    ("grey", "black"),
+    ("brown", "yellow"),
+    ("pink", "red"),
+    ("purple", "pink"),
+}
+
+_TOKEN_TO_COLOR = {t: c for c, tokens in COLOR_GROUPS.items() for t in tokens}
+_ADJACENCY: dict[str, set[str]] = {}
+for _a, _b in ADJACENT_COLORS:
+    _ADJACENCY.setdefault(_a, set()).add(_b)
+    _ADJACENCY.setdefault(_b, set()).add(_a)
+
+# Cap on how many product IDs we remember per shopper. Enough to stop repeats
+# across a realistic session without the session file growing without bound.
+SEEN_PRODUCTS_MEMORY = 60
+
+
+# Words that say nothing about what kind of product something is, so they must
+# not be what makes a complement look like a duplicate of the primary item.
+_GENERIC_TOKENS = frozenset(
+    """a an the and or for with in on of to me my i want need looking show find
+    some something please under below above around near about like similar more
+    less very really just that this it is are be men women unisex kids
+    premium budget cheap expensive nice good best new classic casual formal""".split()
+)
+
+
+def _tokens(text: str) -> set[str]:
+    return {
+        t
+        for t in re.findall(r"[a-z]+", (text or "").lower())
+        if len(t) > 2 and t not in _GENERIC_TOKENS
+    }
+
+
+def _canonical_color(value: str) -> Optional[str]:
+    for token in re.findall(r"[a-z]+", (value or "").lower()):
+        if token in _TOKEN_TO_COLOR:
+            return _TOKEN_TO_COLOR[token]
+    return None
+
+
+def forget_seller_session(session_id: str) -> None:
+    """Drop the seller's scratch history for a finished negotiation.
+
+    Each search gets its own seller session (see `find_products`) so nothing
+    leaks between searches; without this the seller would accumulate one dead
+    history per search for the lifetime of the process.
+    """
+    try:
+        with httpx.Client(timeout=5.0) as client:
+            client.delete(f"{SELLER_AGENT_URL}/session/{session_id}")
+    except Exception:
+        # Best effort — the seller prunes its own sessions as a backstop.
+        pass
+
+
+def message_seller(text: str, session_id: str) -> dict[str, Any]:
+    """Send a free-text brief to the Seller Agent.
+
+    Args:
+        text: Message to send to the Seller Agent.
+        session_id: Session ID scoping the seller's memory to ONE negotiation,
+            so its rounds share context but separate searches never do.
+
+    Returns:
+        Dict with the Seller Agent's response and tool results.
+    """
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            response = client.post(
+                f"{SELLER_AGENT_URL}/message",
+                json={"session_id": session_id, "text": text},
+            )
+            response.raise_for_status()
+            result = response.json()
+            logger.info(f"Seller Agent response: {result.get('response', '')[:100]}...")
+            return result
+    except httpx.TimeoutException:
+        logger.error("Seller Agent timeout")
+        return {"response": "Seller is unavailable. Please try again shortly.", "tool_results": [], "error": True}
+    except Exception as e:
+        logger.error(f"Seller Agent error: {e}")
+        return {"response": "Seller is unavailable. Please try again shortly.", "tool_results": [], "error": True}
+
+
+def fetch_facets(
+    query: str, gender: Optional[str] = None, full: bool = False
+) -> dict[str, Any]:
+    """Ask the Seller Agent which choices actually exist for a product type.
+
+    Args:
+        query: The product type, e.g. "shirt".
+        gender: Optional gender filter.
+        full: Ask for the complete, untruncated facet lists instead of a
+            form-sized subset. Use when answering the shopper directly.
+
+    Returns:
+        Facet dict, or an empty dict if the seller can't be reached — the
+        caller should degrade to asking nothing rather than to guessing.
+    """
+    try:
+        with httpx.Client(timeout=15.0) as client:
+            response = client.post(
+                f"{SELLER_AGENT_URL}/facets",
+                json={"query": query, "gender": gender, "full": full},
+            )
+            response.raise_for_status()
+            return response.json()
+    except Exception as e:
+        logger.error(f"Facet lookup failed: {e}")
+        return {}
+
+
+def _products_from_reply(reply: dict[str, Any]) -> list[dict[str, Any]]:
+    """Pull the product list out of a seller reply's search tool results."""
+    products = []
+    seen = set()
+    for tr in reply.get("tool_results") or []:
+        if tr.get("tool") != "search_catalog":
+            continue
+        for product in (tr.get("result") or {}).get("products", []):
+            pid = product.get("id")
+            if pid and pid not in seen:
+                seen.add(pid)
+                products.append(product)
+    return products
+
+
+def compute_band(constraints: dict[str, Any], round_no: int) -> dict[str, Any]:
+    """Work out the acceptable price window and colour strictness for a round.
+
+    Args:
+        constraints: The shopper's constraint object.
+        round_no: 1-based negotiation round.
+
+    Returns:
+        Dict with min/max/target price (any may be None) and require_color.
+    """
+    index = min(round_no, MAX_SELLER_ROUNDS) - 1
+    budget = constraints.get("budget")
+    explicit_min = constraints.get("budget_min")
+    explicit_max = constraints.get("budget_max")
+    premium = bool(constraints.get("premium"))
+    flexible = bool(constraints.get("budget_flexible"))
+
+    band: dict[str, Any] = {
+        "min": None,
+        "max": None,
+        "target": None,
+        # Colour is only mandatory on the opening round. After that it stays a
+        # ranking preference — better to show a near-miss than nothing at all.
+        "require_color": index == 0,
+    }
+
+    # An explicit range (usually a price band the shopper picked) is taken at
+    # face value — squeezing "₹749 to ₹1,224" into a single target and then
+    # deriving a floor from it turns the floor into a ceiling.
+    if explicit_min or explicit_max:
+        band["max"] = explicit_max
+        band["min"] = int(explicit_min * BAND_FLOOR_RELAXATION[index]) if explicit_min else None
+        if explicit_min and explicit_max:
+            band["target"] = (explicit_min + explicit_max) // 2
+        else:
+            band["target"] = explicit_max or explicit_min
+        return band
+
+    if not budget:
+        return band
+
+    if constraints.get("purpose") == "complement":
+        # A cross-sell is a "spend up to this" ask, not a "spend around this"
+        # one. Applying the usual floor made every complement search fail: a
+        # ₹500 accessory budget became a ₹400-₹500 window, which almost nothing
+        # lands in.
+        band["max"] = budget
+        band["target"] = int(budget * 0.6)
+        return band
+
+    floor_ratios = PREMIUM_FLOOR_RATIOS if premium else BUDGET_FLOOR_RATIOS
+    ceiling_ratio = FLEXIBLE_CEILING_RATIOS[index] if flexible else 1.0
+
+    band["min"] = int(budget * floor_ratios[index])
+    band["max"] = int(budget * ceiling_ratio)
+    # Aim at the budget itself when the shopper is stretching for the right
+    # piece; a plain "under X" aims just below the ceiling.
+    band["target"] = int(budget if (flexible or premium) else budget * 0.9)
+    return band
+
+
+def evaluate_product(
+    product: dict[str, Any],
+    constraints: dict[str, Any],
+    band: dict[str, Any],
+    same_type_tokens: Optional[set[str]] = None,
+) -> list[str]:
+    """Check one product against the constraints.
+
+    Args:
+        product: Product dict from the seller.
+        constraints: The shopper's constraint object.
+        band: Output of `compute_band` for the current round.
+        same_type_tokens: Words describing the primary item. On a cross-sell
+            pass, a "complement" sharing one of these is just another item of
+            the same kind — a second watch is not an accessory for the first.
+
+    Returns:
+        List of violated-constraint tags. Empty means the product is acceptable.
+    """
+    problems = []
+    price = product.get("price") or 0
+
+    if same_type_tokens and _tokens(product.get("name", "")) & same_type_tokens:
+        problems.append("same_as_primary")
+
+    if band["max"] and price > band["max"]:
+        problems.append("over_budget")
+    if band["min"] and price < band["min"]:
+        problems.append("under_budget")
+
+    wanted_gender = (constraints.get("gender") or "").strip().lower()
+    actual_gender = (product.get("gender") or "").strip().lower()
+    if wanted_gender and actual_gender not in (wanted_gender, "unisex"):
+        problems.append("wrong_gender")
+
+    wanted_colors = [c for c in (constraints.get("colors") or []) if c]
+    if wanted_colors and band["require_color"]:
+        actual = _canonical_color(product.get("color", ""))
+        wanted = {_canonical_color(c) or c.lower() for c in wanted_colors}
+        if not actual or (actual not in wanted and not (_ADJACENCY.get(actual, set()) & wanted)):
+            problems.append("wrong_color")
+
+    return problems
+
+
+def _describe_rejections(
+    rejected: list[tuple[dict[str, Any], list[str]]], band: dict[str, Any]
+) -> str:
+    """Turn rejection tags into a correction the Seller Agent can act on."""
+    if not rejected:
+        return "Nothing usable came back at all."
+
+    tally: dict[str, list[dict[str, Any]]] = {}
+    for product, problems in rejected:
+        for problem in problems:
+            tally.setdefault(problem, []).append(product)
+
+    def count(n: int) -> str:
+        return "1 was" if n == 1 else f"{n} were"
+
+    notes = []
+    if "under_budget" in tally:
+        prices = sorted(p["price"] for p in tally["under_budget"])
+        notes.append(
+            f"{count(len(prices))} far too cheap (₹{prices[0]:,}-₹{prices[-1]:,}); "
+            f"this buyer is shopping at ₹{band['min']:,}+, not the bargain shelf"
+        )
+    if "over_budget" in tally:
+        prices = sorted(p["price"] for p in tally["over_budget"])
+        notes.append(f"{count(len(prices))} over budget (up to ₹{prices[-1]:,})")
+    if "wrong_color" in tally:
+        colors = sorted({p.get("color", "?") for p in tally["wrong_color"]})
+        notes.append(f"{count(len(tally['wrong_color']))} the wrong colour ({', '.join(colors)})")
+    if "wrong_gender" in tally:
+        notes.append(f"{count(len(tally['wrong_gender']))} for the wrong gender")
+
+    return "; ".join(notes) + "."
+
+
+def build_brief(
+    constraints: dict[str, Any],
+    band: dict[str, Any],
+    exclude_ids: set[str],
+    round_no: int,
+    feedback: Optional[str],
+) -> str:
+    """Compose the natural-language brief sent to the Seller Agent.
+
+    Constraints are spelled out explicitly rather than left implicit in prose,
+    because the seller has to map them onto search_catalog arguments.
+    """
+    lines = []
+
+    if round_no == 1:
+        lines.append(f"Buyer request: {constraints['query']}")
+    else:
+        lines.append(
+            f"Round {round_no}. Your last set did not work: {feedback} "
+            f"Search again with the corrected constraints below — do not repeat the same call."
+        )
+        lines.append(f"Buyer request: {constraints['query']}")
+
+    if band["target"]:
+        # A complement has no price floor, so describe it as a ceiling rather
+        # than a window and leave min_price out of the seller's call entirely.
+        if band["min"]:
+            lines.append(
+                f"Budget: aim for around ₹{band['target']:,}. "
+                f"Acceptable range is ₹{band['min']:,} to ₹{band['max']:,} — "
+                f"set target_price={band['target']}, min_price={band['min']}, max_price={band['max']}."
+            )
+        else:
+            lines.append(
+                f"Budget: anything up to ₹{band['max']:,}, ideally around "
+                f"₹{band['target']:,} — set target_price={band['target']}, "
+                f"max_price={band['max']}. Do not set min_price."
+            )
+        if constraints.get("premium"):
+            lines.append("The buyer explicitly wants something premium, so do not go low.")
+        if constraints.get("budget_flexible"):
+            lines.append("The buyer said their budget is flexible for the right piece.")
+
+    if constraints.get("colors"):
+        strictness = "required" if band["require_color"] else "strongly preferred"
+        lines.append(f"Colour ({strictness}): {', '.join(constraints['colors'])}.")
+
+    if constraints.get("materials"):
+        lines.append(
+            f"Fabric (preferred, not mandatory): {', '.join(constraints['materials'])} — "
+            f"pass it as `materials`. If the catalogue has none, say so rather than "
+            f"pretending a different fabric matches."
+        )
+
+    if constraints.get("brands"):
+        lines.append(
+            f"Brand affinity: {', '.join(constraints['brands'])} "
+            f"(or comparable brands at that quality level)."
+        )
+
+    if constraints.get("gender"):
+        lines.append(f"Gender: {constraints['gender']} (Unisex is fine too).")
+
+    if exclude_ids:
+        capped = list(exclude_ids)[:40]
+        lines.append(
+            f"Already seen or already rejected — pass these as exclude_ids and do not "
+            f"return them again: {', '.join(capped)}."
+        )
+
+    lines.append(f"Return up to {max(6, constraints.get('min_results', DEFAULT_MIN_RESULTS) * 2)} candidates.")
+    return "\n".join(lines)
+
+
+def find_products(
+    constraints: dict[str, Any],
+    session: dict[str, Any],
+    thread: dict[str, Any],
+    emit: Optional[Callable[[str, dict[str, Any]], None]] = None,
+) -> dict[str, Any]:
+    """Negotiate with the Seller Agent until the constraints are met or rounds run out.
+
+    Args:
+        constraints: query, plus any of budget, budget_flexible, premium,
+            colors, brands, gender, min_results, purpose.
+        session: The shopper's account-level session (profile, durable prefs).
+        thread: The active conversation's state. Already-seen products and the
+            "what are we shopping for" subject live here, not on the account,
+            so a second chat starts clean instead of inheriting the first
+            chat's exclusions and constraints.
+        emit: Optional progress callback, called as emit(stage, payload).
+
+    Returns:
+        Dict with the accepted `products`, a `rounds` trace, and — when the
+        constraints could not be fully met — a `shortfall` the agent must
+        disclose to the shopper rather than paper over.
+    """
+    def progress(stage: str, **payload: Any) -> None:
+        if emit:
+            emit(stage, payload)
+
+    query = constraints.get("query") or ""
+    purpose = constraints.get("purpose") or "primary"
+    min_results = int(constraints.get("min_results") or DEFAULT_MIN_RESULTS)
+    # One seller session per search. The seller needs history across the rounds
+    # of a single negotiation ("round 2, your last set didn't work"), and must
+    # have none at all across searches — a shared session is why a trousers
+    # request could still come back talking about the linen shirts it failed to
+    # find two searches ago.
+    thread["search_seq"] = int(thread.get("search_seq") or 0) + 1
+    seller_session_id = (
+        f"{session.get('user', {}).get('email') or 'anon'}"
+        f":{thread.get('id') or 'default'}:{thread['search_seq']}"
+    )
+
+    # Remember what the shopper is actually buying, so the follow-up cross-sell
+    # pass can reject "complements" that are really the same product type.
+    if purpose == "primary":
+        thread["last_primary_tokens"] = sorted(_tokens(query))
+        same_type_tokens = None
+    else:
+        same_type_tokens = set(thread.get("last_primary_tokens") or [])
+
+    previously_seen = set(thread.get("seen_product_ids") or [])
+    # Hiding everything already shown is what stops the agent re-offering the
+    # same three watches every turn — but it must not become a dead end when
+    # the shopper deliberately refers back to something, so the caller can opt
+    # out for that turn.
+    # Rejects join this set as we go, so a later round can't hand back
+    # something an earlier round already ruled out.
+    exclude: set[str] = set() if constraints.get("include_seen") else set(previously_seen)
+
+    accepted: dict[str, dict[str, Any]] = {}
+    rounds: list[dict[str, Any]] = []
+    feedback: Optional[str] = None
+    seller_unreachable = False
+
+    max_rounds = MAX_COMPLEMENT_ROUNDS if purpose == "complement" else MAX_SELLER_ROUNDS
+
+    for round_no in range(1, max_rounds + 1):
+        band = compute_band(constraints, round_no)
+
+        progress(
+            "seller_round",
+            round=round_no,
+            max_rounds=max_rounds,
+            query=query,
+            band=band,
+        )
+
+        reply = message_seller(build_brief(constraints, band, exclude, round_no, feedback), seller_session_id)
+        if reply.get("error"):
+            seller_unreachable = True
+            break
+
+        offered = _products_from_reply(reply)
+        progress("evaluating", round=round_no, offered=len(offered))
+
+        fresh_accepted = 0
+        rejected: list[tuple[dict[str, Any], list[str]]] = []
+        for product in offered:
+            pid = product.get("id")
+            if not pid or pid in accepted or pid in exclude:
+                continue
+            problems = evaluate_product(product, constraints, band, same_type_tokens)
+            if problems:
+                rejected.append((product, problems))
+            else:
+                accepted[pid] = product
+                fresh_accepted += 1
+
+        # Everything the seller has shown this round is off the table next
+        # round, accepted or not.
+        exclude.update(p["id"] for p in offered if p.get("id"))
+
+        rounds.append(
+            {
+                "round": round_no,
+                "band": band,
+                "offered": len(offered),
+                "accepted": fresh_accepted,
+                "rejected": len(rejected),
+            }
+        )
+        logger.info(
+            f"Round {round_no}: seller offered {len(offered)}, "
+            f"{fresh_accepted} met constraints, {len(rejected)} rejected"
+        )
+
+        if len(accepted) >= min_results:
+            break
+
+        feedback = _describe_rejections(rejected, band)
+        if round_no < max_rounds:
+            progress(
+                "retry",
+                round=round_no + 1,
+                have=len(accepted),
+                need=min_results,
+                reason=feedback,
+            )
+
+    forget_seller_session(seller_session_id)
+
+    # Best-scoring first, with a couple of extras beyond the minimum so the
+    # shopper has room to choose. When a fabric was asked for, genuine fabric
+    # matches sort above near-misses regardless of score: a shopper who said
+    # "linen" would rather see the linen shirt third-best on every other signal
+    # than a higher-scoring polyester one.
+    if constraints.get("materials"):
+        ranked = sorted(
+            accepted.values(),
+            key=lambda p: (not p.get("matches_material"), -(p.get("relevance") or 0)),
+        )[: min_results + 2]
+    else:
+        ranked = sorted(accepted.values(), key=lambda p: -(p.get("relevance") or 0))[: min_results + 2]
+
+    # Later rounds deliberately loosen the ask, so some of what survived may
+    # not meet what the shopper originally said. Re-check each result against
+    # the ROUND 1 constraints and mark it, otherwise the agent describes a
+    # relaxed set using the shopper's original words — "here are black shirts
+    # above ₹749" over a pink one at ₹684.
+    strict_band = compute_band(constraints, 1)
+    relaxed_tags: set[str] = set()
+    for product in ranked:
+        misses = evaluate_product(product, constraints, strict_band, same_type_tokens)
+        product["exact_match"] = not misses
+        relaxed_tags.update(misses)
+
+    if ranked:
+        remembered = list(previously_seen | {p["id"] for p in ranked})
+        thread["seen_product_ids"] = remembered[-SEEN_PRODUCTS_MEMORY:]
+
+    result: dict[str, Any] = {
+        "products": ranked,
+        # Stated explicitly because the model otherwise counts what it saw
+        # during the search rather than what actually reached the shopper.
+        "shown_count": len(ranked),
+        "purpose": purpose,
+        "rounds": rounds,
+        "rounds_used": len(rounds),
+        "constraints_applied": {
+            k: constraints.get(k)
+            for k in (
+                "budget", "budget_min", "budget_max", "budget_flexible",
+                "premium", "colors", "materials", "brands", "gender",
+            )
+            if constraints.get(k)
+        },
+    }
+
+    exact = sum(1 for p in ranked if p.get("exact_match"))
+    result["exact_match_count"] = exact
+
+    if relaxed_tags:
+        readable = {
+            "under_budget": "cheaper than asked",
+            "over_budget": "above the budget",
+            "wrong_color": "not the requested colour",
+            "wrong_gender": "a different gender",
+            "same_as_primary": "the same kind of item",
+        }
+        loosened = ", ".join(sorted(readable.get(t, t) for t in relaxed_tags))
+        result["relaxation_note"] = (
+            f"Only {exact} of {len(ranked)} match exactly what was asked for; the rest are "
+            f"{loosened}. Say this plainly — describe the set as the closest available, "
+            f"and do NOT restate the original constraint as though every result meets it."
+        )
+
+    # Fabric is a preference, so a non-match still gets shown — but the shopper
+    # has to be told, otherwise cotton silently passes as the linen they asked
+    # for.
+    wanted_materials = constraints.get("materials") or []
+    if wanted_materials and ranked:
+        fabric_matches = sum(1 for p in ranked if p.get("matches_material"))
+        result["material_match_count"] = fabric_matches
+
+        if not fabric_matches:
+            result["material_shortfall"] = (
+                f"None of these are {', '.join(wanted_materials)} — the catalogue has no "
+                f"{wanted_materials[0]} in this category. Say so up front; do not imply they match."
+            )
+        elif fabric_matches < len(ranked):
+            # The dangerous case, because it looks like a success. Some results
+            # match and some don't, and calling the whole set "linen shirts" is
+            # a plain untruth about the ones that aren't.
+            result["material_note"] = (
+                f"Only {fabric_matches} of these {len(ranked)} are actually "
+                f"{', '.join(wanted_materials)}; the rest are the closest alternatives in "
+                f"other fabrics. Say that explicitly — give the number that really match "
+                f"and never describe the whole set as {wanted_materials[0]}."
+            )
+
+    if purpose == "complement":
+        # A cross-sell coming back empty just means nothing here pairs with the
+        # main item. That's a non-event — say nothing rather than apologising.
+        if not ranked:
+            result["shortfall"] = (
+                "No genuine complement exists in the catalogue. Do not mention "
+                "cross-sells at all in your reply."
+            )
+        progress("resolved", found=len(ranked), rounds=len(rounds), purpose=purpose)
+        return result
+
+    if seller_unreachable:
+        result["shortfall"] = "The seller could not be reached. Tell the shopper to try again shortly."
+    elif not ranked:
+        result["shortfall"] = (
+            f"After {len(rounds)} rounds the seller had nothing matching these constraints. "
+            f"Tell the shopper plainly that nothing fits, say which constraint is the blocker, "
+            f"and offer to widen it — do NOT show products that break it."
+        )
+    elif len(ranked) < min_results:
+        result["shortfall"] = (
+            f"Only {len(ranked)} of the {min_results} requested options actually fit. "
+            f"Show these and mention the selection at this spec is limited."
+        )
+
+    progress("resolved", found=len(ranked), rounds=len(rounds), purpose=result["purpose"])
+    return result
