@@ -5,6 +5,15 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const API_URL = `${API_BASE}/chat`;
 const STREAM_URL = `${API_BASE}/chat/stream`;
 
+// Sent verbatim when the shopper clicks "Confirm anyway" in the spend-limit
+// dialog. main.py matches on this exact string, in code, before the model
+// ever sees the turn — that's what makes the override a deterministic bypass
+// rather than something the LLM decides. Must match SPEND_LIMIT_OVERRIDE_PHRASE
+// in personal-agent/config.py byte-for-byte; there's no shared build step
+// between the two, so keep them in sync by hand.
+const SPEND_LIMIT_OVERRIDE_PHRASE =
+  "I confirm I want to proceed with this order even though it's over my auto-approve spend limit. Please check out anyway.";
+
 // How each clarifying-form facet reads back to the agent as plain language.
 const FACET_LABELS = {
   colors: "Colour",
@@ -81,6 +90,10 @@ export default function useChat(
   // agent isn't mid-turn.
   const [progress, setProgress] = useState(null);
   const [cart, setCart] = useState(() => initialCart || []);
+  // Set when checkout_cart is blocked by the shopper's auto-approve spend
+  // limit — { amountInr, spendLimit } while the confirmation dialog should be
+  // showing, null otherwise.
+  const [spendLimitBlock, setSpendLimitBlock] = useState(null);
   // Which conversation this chat is showing. Sent with every message so the
   // backend keeps one memory per chat: switching back to an older chat restores
   // its context, and nothing said here reaches a different chat.
@@ -193,6 +206,12 @@ export default function useChat(
         if (checkoutResult?.order_id) {
           setCart([]);
         }
+        if (checkoutResult?.error === "spend_limit_exceeded") {
+          setSpendLimitBlock({
+            amountInr: checkoutResult.amount_inr,
+            spendLimit: checkoutResult.spend_limit,
+          });
+        }
 
         if (data.form?.fields?.length) {
           // Clarifying form — rendered inline as a skippable card. No product
@@ -239,6 +258,19 @@ export default function useChat(
   );
 
   const selectOption = useCallback((option) => sendMessage(option), [sendMessage]);
+
+  // Fires the exact fixed phrase the backend matches on to bypass the spend
+  // cap deterministically — see the constant's comment above. The real
+  // checkout retry happens on the backend; this just clears the dialog and
+  // sends the confirmation like any other chat message.
+  const confirmSpendLimitOverride = useCallback(() => {
+    setSpendLimitBlock(null);
+    sendMessage(SPEND_LIMIT_OVERRIDE_PHRASE, {
+      displayText: "Confirmed — proceed with the order over my limit.",
+    });
+  }, [sendMessage]);
+
+  const dismissSpendLimitBlock = useCallback(() => setSpendLimitBlock(null), []);
 
   // Turn the clarifying form's chips back into a normal user message. Going
   // through the chat rather than a side channel keeps the agent's history
@@ -369,5 +401,8 @@ export default function useChat(
     changeCartSize,
     confirmOrder,
     restoreThread,
+    spendLimitBlock,
+    confirmSpendLimitOverride,
+    dismissSpendLimitBlock,
   };
 }

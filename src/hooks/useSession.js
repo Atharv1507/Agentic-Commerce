@@ -96,6 +96,7 @@ export default function useSession() {
           gender: data.gender,
           size: data.size,
           payment_method: data.payment_method,
+          spend_limit: data.spend_limit,
         }),
       });
     } catch {
@@ -111,6 +112,9 @@ export default function useSession() {
       gender: data.gender,
       size: data.size,
       paymentMethod: data.payment_method,
+      // Per-order auto-approve ceiling, edited only in Settings — never
+      // through chat (update_profile has no such field on the backend).
+      spendLimit: data.spend_limit ?? 5000,
       isOnboarded: true,
     };
 
@@ -148,6 +152,7 @@ export default function useSession() {
         gender: data.gender ?? session?.gender,
         size: data.size ?? session?.size,
         payment_method: data.payment_method ?? session?.paymentMethod,
+        spend_limit: data.spend_limit ?? session?.spendLimit,
       });
     },
     [session, submitOnboarding]

@@ -168,6 +168,7 @@ function SettingsForm({ session, onOpenChange, onSave }) {
     gender: session?.gender || "Other",
     size: session?.size || "",
     payment_method: session?.paymentMethod || "COD",
+    spend_limit: session?.spendLimit || 5000,
   });
   const [saving, setSaving] = useState(false);
 
@@ -235,6 +236,28 @@ function SettingsForm({ session, onOpenChange, onSave }) {
               options={PAYMENT_OPTIONS}
               value={values.payment_method}
               onChange={(v) => setValues((prev) => ({ ...prev, payment_method: v }))}
+            />
+          </div>
+        </section>
+
+        <section className="flex flex-col gap-3 border-t border-border pt-5">
+          <div>
+            <h3 className="text-sm font-medium text-foreground">Spend limit</h3>
+            <p className="text-xs text-muted-foreground">
+              Orders above this amount need your explicit confirmation in a popup before payment
+              starts. This can only be changed here, never in chat.
+            </p>
+          </div>
+          <div>
+            <FieldLabel>Auto-approve up to (₹)</FieldLabel>
+            <Input
+              type="number"
+              min={0}
+              value={values.spend_limit}
+              onChange={(e) =>
+                setValues((prev) => ({ ...prev, spend_limit: Number(e.target.value) || 0 }))
+              }
+              placeholder="5000"
             />
           </div>
         </section>

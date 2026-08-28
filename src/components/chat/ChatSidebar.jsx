@@ -7,6 +7,7 @@ import {
   SquarePen,
   MessageCircle,
   Settings,
+  History,
   Plus,
   Check,
   Trash2,
@@ -91,6 +92,7 @@ export default function ChatSidebar({
   onDeleteThread,
   onGoHome,
   onOpenSettings,
+  onOpenActivityLog,
   onAddToCart,
   userSize,
 }) {
@@ -183,16 +185,24 @@ export default function ChatSidebar({
         )}
       </AnimatePresence>
 
-      <div className={cn("mt-auto border-t border-border p-3", collapsed && "flex justify-center")}>
+      <div className={cn("mt-auto flex gap-1 border-t border-border p-3", collapsed && "flex-col items-center")}>
         <button
           onClick={onOpenSettings}
           className={cn(
-            "flex items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
-            collapsed && "w-auto justify-center px-2.5"
+            "flex flex-1 items-center gap-2.5 rounded-xl px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground",
+            collapsed && "w-auto flex-none justify-center px-2.5"
           )}
         >
           <Settings className="size-4 shrink-0" />
           {!collapsed && "Preferences"}
+        </button>
+        <button
+          onClick={onOpenActivityLog}
+          className="shrink-0 rounded-xl p-2 text-muted-foreground transition-colors hover:bg-secondary/60 hover:text-foreground"
+          aria-label="Activity log"
+          title="Activity log"
+        >
+          <History className="size-4" />
         </button>
       </div>
     </motion.aside>

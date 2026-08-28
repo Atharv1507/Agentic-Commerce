@@ -10,6 +10,8 @@ import ChatSidebar from "@/components/chat/ChatSidebar";
 import FloatingCartButton from "@/components/cart/FloatingCartButton";
 import CartModal from "@/components/cart/CartModal";
 import SettingsModal from "@/components/settings/SettingsModal";
+import ActivityLogPanel from "@/components/activity/ActivityLogPanel";
+import SpendLimitDialog from "@/components/checkout/SpendLimitDialog";
 import { useState } from "react";
 
 function App() {
@@ -30,6 +32,7 @@ function App() {
   const { threads, createThread, switchThread, deleteThread, seenProducts } = useChatThreads(session, chat);
   const [cartOpen, setCartOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [activityOpen, setActivityOpen] = useState(false);
 
   const enterChatWithThread = (id) => {
     switchThread(id);
@@ -74,6 +77,7 @@ function App() {
               onDeleteThread={deleteThread}
               onGoHome={goHome}
               onOpenSettings={() => setSettingsOpen(true)}
+              onOpenActivityLog={() => setActivityOpen(true)}
               onAddToCart={chat.addToCart}
               userSize={session?.size}
             />
@@ -120,6 +124,17 @@ function App() {
               onOpenChange={setSettingsOpen}
               session={session}
               onSave={updateProfile}
+            />
+
+            <ActivityLogPanel open={activityOpen} onOpenChange={setActivityOpen} session={session} />
+
+            <SpendLimitDialog
+              open={Boolean(chat.spendLimitBlock)}
+              onOpenChange={(v) => !v && chat.dismissSpendLimitBlock()}
+              amountInr={chat.spendLimitBlock?.amountInr}
+              spendLimit={chat.spendLimitBlock?.spendLimit}
+              onConfirm={chat.confirmSpendLimitOverride}
+              onCancel={chat.dismissSpendLimitBlock}
             />
           </motion.div>
         )}
