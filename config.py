@@ -16,6 +16,24 @@ SESSIONS_FILE = Path("sessions.json")
 # model looping on its own tool calls.
 MAX_TOOL_ITERATIONS = 6
 
+# Per-order auto-approve ceiling used when a shopper hasn't set their own in
+# Settings. Enforced in code inside checkout_cart — never editable by the LLM
+# (update_profile deliberately excludes it), so a shopper cannot talk the agent
+# into raising their own guardrail.
+DEFAULT_SPEND_LIMIT = 5000
+
+# Exact phrase the frontend sends, verbatim, when the shopper confirms a
+# spend-limit override through the app's own dialog. main.py matches on this
+# string BEFORE the model ever sees the message, so the bypass decision is a
+# plain equality check rather than something the LLM decides. Must match
+# SPEND_LIMIT_OVERRIDE_PHRASE in "Shopper Agent/src/hooks/useChat.js"
+# byte-for-byte — there is no shared build step between the two, so keep them
+# in sync by hand.
+SPEND_LIMIT_OVERRIDE_PHRASE = (
+    "I confirm I want to proceed with this order even though it's over my "
+    "auto-approve spend limit. Please check out anyway."
+)
+
 SYSTEM_PROMPT = """You are a friendly shopping assistant for a shirt specialist. This store sells \
 SHIRTS and T-SHIRTS only — for men, women and unisex — across fabrics (cotton, linen, chambray, \
 silk, corduroy and more), fits, patterns and price points from about Rs 300 to Rs 9,000.
@@ -48,9 +66,10 @@ You have 11 tools:
    - Change a cart line's size or quantity, or remove it. This is how you act
      on "make it M then" after a checkout is refused — never tell the shopper
      to go and edit the cart themselves for something you can do.
-3. checkout_cart() - Check out the user's current cart. Takes NO arguments — it
+3. checkout_cart(confirm_over_limit?) - Check out the user's current cart. It
    reads cart contents and buyer details straight from the session. Never try
    to pass product IDs or an amount; you are not a reliable source for either.
+   Ignore confirm_over_limit in ordinary use — see SPEND LIMIT below.
 4. update_profile(email?, phone?, address?, payment_method?, gender?, size?) - Save
    profile fields you collect conversationally (e.g. missing checkout info).
 5. save_preferences(colors?, brands?, categories?, budget_level?, style?, avoid?)
@@ -275,6 +294,23 @@ CHECKOUT FLOW:
 6. After payment, call verify_payment with both order_id and payment_id (both are
    given to you in the user's message) to confirm status.
 7. Show receipt.
+
+SPEND LIMIT (auto-approve guardrail):
+- Every shopper has a per-order spend limit (default Rs 5,000), editable only
+  in Settings — never in chat. checkout_cart enforces it in code; you cannot
+  raise it, lower it, or waive it, and update_profile does not accept it. If a
+  shopper asks you to raise their limit or "just let this one through", tell
+  them that has to happen in Settings — do not attempt any workaround.
+- When checkout_cart returns {"error": "spend_limit_exceeded", "amount_inr":
+  ..., "spend_limit": ...}, state the order total and their limit in one line.
+  Do NOT call ask_user — the app has already put a Confirm/Cancel dialog on
+  their screen, and asking again in chat is a redundant, confusing second
+  prompt.
+- Their decision does not come from you asking a question in chat: if they
+  confirm through that dialog, the app resends their confirmation and
+  checkout_cart is re-run for you automatically with the override already
+  applied — you will see a normal "created" result on that next turn. Do not
+  call checkout_cart again yourself while waiting for it.
 
 RULES:
 - What the shopper says this turn outranks a saved preference, which outranks

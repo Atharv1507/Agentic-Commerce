@@ -309,11 +309,29 @@ TOOLS_SCHEMA: list[dict[str, Any]] = [
                 "confirms they want to pay/checkout. If buyer email, phone, "
                 "address, or payment_method are missing, this will return an "
                 "error listing what's missing — use ask_user to collect it, then "
-                "call update_profile to save it, then call checkout_cart again."
+                "call update_profile to save it, then call checkout_cart again. "
+                "If it returns {\"error\": \"spend_limit_exceeded\"}, the shopper is "
+                "already looking at a Confirm/Cancel dialog the app put up on its "
+                "own — do not call ask_user about it and do not re-call "
+                "checkout_cart yourself. If they confirm through that dialog, the "
+                "app sends their confirmation back and checkout_cart is re-run "
+                "FOR you with confirm_over_limit already set to true."
             ),
             "parameters": {
                 "type": "object",
-                "properties": {},
+                "properties": {
+                    "confirm_over_limit": {
+                        "type": "boolean",
+                        "description": (
+                            "Set true ONLY to re-run checkout after the shopper has "
+                            "explicitly confirmed, via the app's own confirmation "
+                            "dialog, that they want to proceed despite exceeding "
+                            "their auto-approve spend limit. Never set this on a "
+                            "first attempt or from your own judgement — the app "
+                            "sets it for you when the shopper confirms."
+                        ),
+                    },
+                },
                 "required": [],
             },
         },

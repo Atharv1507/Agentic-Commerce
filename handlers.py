@@ -5,6 +5,7 @@ from typing import Any, Callable, Optional
 import razorpay
 from dotenv import load_dotenv
 
+from config import DEFAULT_SPEND_LIMIT
 from context import (
     durable_hints,
     expresses_no_preference,
@@ -529,7 +530,7 @@ def update_cart(arguments: dict[str, Any], session: dict[str, Any]) -> dict[str,
     return {"status": "ok", "cart": cart, "cart_updated": True, "line": line}
 
 
-def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
+def checkout_cart(session: dict[str, Any], confirm_over_limit: bool = False) -> dict[str, Any]:
     """Create a Razorpay order for the user's current session cart.
 
     Reads buyer details and cart contents directly from the session so the
@@ -537,11 +538,17 @@ def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
 
     Args:
         session: Current user session (contains "user" and "cart").
+        confirm_over_limit: True only once the shopper has explicitly
+            confirmed, through the app's own dialog, that they want to proceed
+            despite exceeding their auto-approve spend limit. Set by
+            main.py's deterministic override-phrase check, not by the model's
+            own judgement.
 
     Returns:
         Dict with order details, or an "error" key describing why checkout
         could not proceed (empty cart, missing buyer info, a line that can't
-        ship in the size it was ordered in, or a Razorpay failure).
+        ship in the size it was ordered in, the total exceeding the shopper's
+        spend limit, or a Razorpay failure).
     """
     user = session.get("user", {})
     cart = session.get("cart", [])
@@ -609,6 +616,27 @@ def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
 
     amount = sum(item["price"] * item.get("quantity", 1) for item in cart)
 
+    # Code-level guardrail, independent of the LLM: an order over the
+    # shopper's auto-approve limit cannot reach Razorpay unless the shopper
+    # has already confirmed the override through the app's own dialog. Cart
+    # and stock are untouched at this point, so blocking here has no side
+    # effects to undo.
+    spend_limit = user.get("spend_limit") or DEFAULT_SPEND_LIMIT
+    if amount > spend_limit and not confirm_over_limit:
+        logger.info(f"Checkout blocked by spend limit: amount={amount} limit={spend_limit}")
+        return {
+            "error": "spend_limit_exceeded",
+            "amount_inr": amount,
+            "spend_limit": spend_limit,
+            "over_by": amount - spend_limit,
+            "message": (
+                f"This order is Rs {amount:,}, above the shopper's Rs {spend_limit:,} "
+                f"auto-approve limit. The app is showing them a Confirm/Cancel dialog "
+                f"directly — say the total and the limit in one line, do not call "
+                f"ask_user, and do not retry checkout_cart yourself."
+            ),
+        }
+
     try:
         order = razorpay_client.order.create(
             {
@@ -619,6 +647,9 @@ def checkout_cart(session: dict[str, Any]) -> dict[str, Any]:
         )
 
         logger.info(f"Order created: {order['id']} for products: {product_ids}")
+        # Tracked so verify_payment can tell a first confirmation from a repeat
+        # one and never re-process an order already marked paid.
+        session.setdefault("orders", {})[order["id"]] = {"status": "created"}
         session["cart"] = []
 
         return {
@@ -676,6 +707,10 @@ def update_profile(arguments: dict[str, Any], session: dict[str, Any]) -> dict[s
     """
     user = session.setdefault("user", {})
 
+    # `spend_limit` is deliberately absent: it's a safety ceiling set in
+    # Settings, not something to negotiate in chat — letting update_profile
+    # touch it would let a shopper talk the agent into raising their own
+    # guardrail.
     for field in ("name", "email", "phone", "address", "payment_method", "gender", "size"):
         value = arguments.get(field)
         if value:
@@ -777,7 +812,9 @@ def clear_preferences(arguments: dict[str, Any], session: dict[str, Any]) -> dic
     }
 
 
-def verify_payment(order_id: str, payment_id: Optional[str] = None) -> dict[str, Any]:
+def verify_payment(
+    session: dict[str, Any], order_id: str, payment_id: Optional[str] = None
+) -> dict[str, Any]:
     """Verify payment status for an order.
 
     Prefers looking up the payment itself (authoritative capture status) over
@@ -785,18 +822,35 @@ def verify_payment(order_id: str, payment_id: Optional[str] = None) -> dict[str,
     LLM is handed both an order_id and a payment_id in the same sentence and
     isn't a reliable router between them.
 
+    An order already recorded as paid is not re-verified against Razorpay: the
+    stored result is returned as-is. Without this, a shopper (or an agent)
+    resending the same payment-completion message would look identical to a
+    fresh confirmation, which is exactly the double-processing this guards
+    against — verifying is harmless today since nothing here ships or charges
+    again on a repeat call, but the same order record is what a real
+    fulfillment step would key off, so it must not look "freshly confirmed"
+    twice.
+
     Args:
+        session: Current user session (contains "orders", the local order
+            status ledger keyed by Razorpay order_id).
         order_id: The Razorpay order ID.
         payment_id: The Razorpay payment ID, if known.
 
     Returns:
         Dict with payment status.
     """
+    orders = session.setdefault("orders", {})
+    existing = orders.get(order_id)
+    if existing and existing.get("status") == "paid":
+        logger.info(f"verify_payment short-circuit: {order_id} already marked paid")
+        return {**existing.get("result", {}), "already_verified": True}
+
     try:
         if payment_id:
             payment = razorpay_client.payment.fetch(payment_id)
             logger.info(f"Payment verified for {payment_id}: {payment['status']}")
-            return {
+            result = {
                 "order_id": payment.get("order_id", order_id),
                 "payment_id": payment_id,
                 "status": payment["status"],
@@ -804,19 +858,25 @@ def verify_payment(order_id: str, payment_id: Optional[str] = None) -> dict[str,
                 "amount_inr": payment["amount"] // 100,
                 "amount_note": f"Quote ₹{payment['amount'] // 100:,} — `amount` is in paise.",
             }
-
-        order = razorpay_client.order.fetch(order_id)
-        logger.info(f"Payment verified for {order_id}: {order['status']}")
-        return {
-            "order_id": order["id"],
-            "status": order["status"],
-            "amount": order["amount"],
-            "amount_inr": order["amount"] // 100,
-            "amount_note": f"Quote ₹{order['amount'] // 100:,} — `amount` is in paise.",
-        }
+        else:
+            order = razorpay_client.order.fetch(order_id)
+            logger.info(f"Payment verified for {order_id}: {order['status']}")
+            result = {
+                "order_id": order["id"],
+                "status": order["status"],
+                "amount": order["amount"],
+                "amount_inr": order["amount"] // 100,
+                "amount_note": f"Quote ₹{order['amount'] // 100:,} — `amount` is in paise.",
+            }
     except Exception as e:
         logger.error(f"Payment verification error: {e}")
         return {"error": "verification_failed"}
+
+    if result.get("status") in ("captured", "paid"):
+        orders[order_id] = {"status": "paid", "result": result}
+    else:
+        orders.setdefault(order_id, {"status": "created"})
+    return result
 
 
 def extract_structured_payload(tool_results: list[dict[str, Any]]) -> dict[str, Any]:
@@ -987,7 +1047,7 @@ def execute_tool(
     if tool_name == "update_cart":
         return update_cart(arguments, session)
     if tool_name == "checkout_cart":
-        return checkout_cart(session)
+        return checkout_cart(session, confirm_over_limit=bool(arguments.get("confirm_over_limit")))
     if tool_name == "update_profile":
         return update_profile(arguments, session)
     if tool_name == "save_preferences":
@@ -995,7 +1055,7 @@ def execute_tool(
     if tool_name == "clear_preferences":
         return clear_preferences(arguments, session)
     if tool_name == "verify_payment":
-        return verify_payment(arguments["order_id"], arguments.get("payment_id"))
+        return verify_payment(session, arguments["order_id"], arguments.get("payment_id"))
 
     logger.error(f"Unknown tool: {tool_name}")
     return {"error": "unknown_tool"}

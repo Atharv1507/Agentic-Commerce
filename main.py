@@ -5,6 +5,7 @@ import os
 import queue
 import threading
 import time
+import uuid
 from datetime import datetime
 from typing import Any, Callable, Optional
 
@@ -15,6 +16,7 @@ from pydantic import BaseModel
 from openai import OpenAI
 from dotenv import load_dotenv
 
+import audit
 from config import (
     SYSTEM_PROMPT,
     OPENAI_MODEL,
@@ -22,6 +24,7 @@ from config import (
     SESSION_HISTORY_LIMIT,
     SESSIONS_FILE,
     MAX_TOOL_ITERATIONS,
+    SPEND_LIMIT_OVERRIDE_PHRASE,
 )
 from schemas import TOOLS_SCHEMA
 from context import durable_hints, normalize_gender, normalize_size
@@ -284,6 +287,43 @@ def run_chat_turn(
 
     progress("thinking")
 
+    if text.strip() == SPEND_LIMIT_OVERRIDE_PHRASE:
+        # Deterministic bypass: the frontend only ever sends this exact phrase
+        # after the shopper clicks "Confirm anyway" in the spend-limit dialog,
+        # so which order gets to skip the cap is a plain string match resolved
+        # here, in code, before the model ever gets a turn to decide it.
+        logger.info("Spend-limit override phrase detected; forcing checkout_cart(confirm_over_limit=True)")
+        override_result = execute_tool(
+            "checkout_cart", {"confirm_over_limit": True}, session, thread, turn_text=text, emit=emit
+        )
+        audit.record(session, thread, "checkout_cart", {"confirm_over_limit": True}, override_result)
+        call_id = f"override-{uuid.uuid4().hex[:12]}"
+        thread["history"].append(
+            {
+                "role": "assistant",
+                "content": "",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "checkout_cart",
+                            "arguments": json.dumps({"confirm_over_limit": True}),
+                        },
+                    }
+                ],
+            }
+        )
+        thread["history"].append(
+            {"role": "tool", "tool_call_id": call_id, "content": json.dumps(override_result)}
+        )
+        all_tool_results.append(
+            {"tool_call_id": call_id, "tool": "checkout_cart", "result": override_result}
+        )
+        # Falls through into the loop below so the model still runs once, to
+        # compose the natural-language reply — it never decided WHETHER to
+        # bypass the cap, only how to describe the result that already happened.
+
     for _ in range(MAX_TOOL_ITERATIONS):
         response = openai_client.chat.completions.create(
             model=OPENAI_MODEL,
@@ -322,6 +362,7 @@ def run_chat_turn(
             result = execute_tool(
                 tool_call.function.name, arguments, session, thread, turn_text=text, emit=emit
             )
+            audit.record(session, thread, tool_call.function.name, arguments, result)
 
             all_tool_results.append(
                 {
@@ -390,6 +431,10 @@ class OnboardingRequest(BaseModel):
     # Optional so an older client (or a curl call) that predates the size step
     # still onboards, rather than 422-ing on a field it doesn't know about.
     size: Optional[str] = None
+    # Per-order auto-approve ceiling. Settings-only — never written by the
+    # agent (update_profile has no such field), so this endpoint is the sole
+    # write path for it.
+    spend_limit: Optional[int] = None
 
 
 class ChatRequest(BaseModel):
@@ -437,6 +482,8 @@ async def onboarding(request: OnboardingRequest) -> dict[str, Any]:
     # must not overwrite a detail the shopper already gave — including one the
     # agent collected mid-chat at checkout.
     session["user"].update({k: v for k, v in details.items() if v or k == "email"})
+    if request.spend_limit is not None and request.spend_limit > 0:
+        session["user"]["spend_limit"] = request.spend_limit
 
     save_sessions(sessions)
     logger.info(f"Session saved for {email}")
@@ -586,6 +633,26 @@ async def delete_preferences(email: str) -> dict[str, Any]:
     save_sessions(sessions)
     logger.info(f"Preferences cleared for {email}")
     return {"status": "ok", "preferences": {}}
+
+
+@app.get("/session/{email}/logs")
+async def get_logs(email: str, limit: int = 50) -> dict[str, Any]:
+    """Return this account's audit trail — every tool call the agent made.
+
+    Scoped per-shopper, like preferences and the cart, rather than a global
+    feed: this reflects one account's own conversations, not the whole
+    system's traffic.
+
+    Args:
+        email: User's email address.
+        limit: How many of the most recent entries to return.
+
+    Returns:
+        Dict with `count` (total entries on file) and `entries` (newest first).
+    """
+    session = _require_session(email.lower())
+    log = session.get("audit_log", [])
+    return {"status": "ok", "count": len(log), "entries": list(reversed(log[-limit:]))}
 
 
 # A cart line is identified by (product, size), not by product alone: the same
@@ -742,6 +809,8 @@ def _migrate_session(session: dict[str, Any]) -> dict[str, Any]:
     session.setdefault("user", {})
     session.setdefault("preferences", {})
     session.setdefault("cart", [])
+    session.setdefault("orders", {})
+    session.setdefault("audit_log", [])
     threads = session.setdefault("threads", {})
 
     legacy_history = session.pop("history", None)
