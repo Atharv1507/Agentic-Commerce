@@ -97,10 +97,21 @@ _GENERIC_TOKENS = frozenset(
 )
 
 
+# Folded before word-splitting so a hyphen never fractures "T-Shirt" into "t"
+# + "shirt" — the plain regex below treats "-" as a separator, which made
+# every T-shirt's name contain the literal token "shirt" and get flagged as
+# "the same kind of item" as a Shirt search. That collision defeated this
+# store's only legitimate cross-sell pairing (shirt <-> T-shirt) every time.
+# Mirrors context.py's COMPOUND_PATTERNS, kept local for the same reason
+# COLOR_GROUPS is: this tokenizer must not depend on the seller process.
+_TSHIRT_PATTERN = re.compile(r"\bt[\s\-]?shirts?\b")
+
+
 def _tokens(text: str) -> set[str]:
+    folded = _TSHIRT_PATTERN.sub(" tshirt ", (text or "").lower())
     return {
         t
-        for t in re.findall(r"[a-z]+", (text or "").lower())
+        for t in re.findall(r"[a-z]+", folded)
         if len(t) > 2 and t not in _GENERIC_TOKENS
     }
 
