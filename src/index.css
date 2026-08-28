@@ -1,55 +1,115 @@
-@import url("https://fonts.googleapis.com/css2?family=Montserrat:wght@300;400;500;600;700&family=Lora:wght@400;500;600;700&display=swap");
+@import url("https://fonts.googleapis.com/css2?family=Montserrat:wght@200;300;400;500;600;700;800&display=swap");
 @import "tailwindcss";
 
 @theme {
-  --color-background: #0a0a0f;
-  --color-foreground: #f5f5f5;
-  --color-card: #141420;
-  --color-card-foreground: #f5f5f5;
-  --color-primary: #d4a030;
-  --color-primary-foreground: #0a0a0f;
-  --color-secondary: #1e1e2e;
-  --color-secondary-foreground: #f5f5f5;
-  --color-muted: #1a1a2a;
-  --color-muted-foreground: #8888aa;
-  --color-accent: #e8b84a;
-  --color-accent-foreground: #0a0a0f;
-  --color-destructive: #ff4444;
-  --color-border: #2a2a3a;
-  --color-ring: #d4a030;
-  --color-input: #2a2a3a;
+  /* Porcelain/Charcoal/Sand/Taupe palette: #F1ECE3 (porcelain), #272727
+     (charcoal), #D6C5B2 (sand), #6C584C (taupe) — charcoal anchors the dark
+     surfaces, taupe replaces burgundy as primary/ring, sand carries muted text. */
+  --color-background: #1e1e1e;
+  --color-foreground: #f1ece3;
+  --color-card: #272727;
+  --color-card-foreground: #f1ece3;
+  --color-primary: #6c584c;
+  --color-primary-foreground: #f1ece3;
+  --color-secondary: #3c3632;
+  --color-secondary-foreground: #f1ece3;
+  --color-muted: #242220;
+  --color-muted-foreground: #d6c5b2;
+  --color-accent: #917e70;
+  --color-accent-foreground: #f1ece3;
+  --color-destructive: #a6423e;
+  --color-border: #433b36;
+  --color-ring: #6c584c;
+  --color-input: #433b36;
+  --color-overlay: rgba(20, 19, 18, 0.6);
 
+  /* Single typeface, used across headings and body — personality comes from
+     weight/size contrast (see .font-hero / .font-emphasis below), not a second family. */
   --font-sans: "Montserrat", sans-serif;
-  --font-heading: "Lora", serif;
+  --font-heading: "Montserrat", sans-serif;
 
   --radius-sm: 0.25rem;
   --radius-md: 0.5rem;
   --radius-lg: 0.75rem;
   --radius-xl: 1rem;
+  --radius-2xl: 1.75rem;
+
+  /* Type scale built on the golden ratio (φ ≈ 1.618, √φ ≈ 1.272) from a 16px base.
+     Line-heights tighten as size increases, per standard display-type convention. */
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.5;
+  --text-sm: 0.875rem;
+  --text-sm--line-height: 1.55;
+  --text-base: 1rem;
+  --text-base--line-height: 1.6;
+  --text-lg: 1.272rem;
+  --text-lg--line-height: 1.5;
+  --text-xl: 1.618rem;
+  --text-xl--line-height: 1.35;
+  --text-2xl: 2.058rem;
+  --text-2xl--line-height: 1.25;
+  --text-3xl: 2.618rem;
+  --text-3xl--line-height: 1.15;
+  --text-4xl: 3.33rem;
+  --text-4xl--line-height: 1.1;
+  --text-5xl: 4.236rem;
+  --text-5xl--line-height: 1.05;
+  --text-6xl: 6.854rem;
+  --text-6xl--line-height: 1;
 }
 
-* {
-  margin: 0;
-  padding: 0;
-  box-sizing: border-box;
+/* Layered (not bare top-level rules) so utility classes like px-5/py-3 can
+   still override this reset — unlayered CSS always wins over @layer content
+   regardless of selector specificity, which was silently zeroing out every
+   padding/margin utility in the app. */
+@layer base {
+  * {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+
+  body {
+    font-family: var(--font-sans);
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    overflow-x: hidden;
+  }
+
+  #root {
+    min-height: 100dvh;
+    width: 100%;
+  }
 }
 
-body {
-  font-family: var(--font-sans);
-  background-color: var(--color-background);
-  color: var(--color-foreground);
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-  overflow-x: hidden;
+/* Display headline treatment: light body weight with a bolder, tinted emphasis
+   span inside it — the "mix of low and high weights" the type system leans on. */
+@layer components {
+  .font-hero {
+    font-weight: 300;
+    letter-spacing: -0.02em;
+  }
+
+  .font-hero em,
+  .font-hero .emphasis {
+    font-style: normal;
+    font-weight: 600;
+    color: var(--color-foreground);
+  }
 }
 
-h1, h2, h3, h4, h5, h6 {
-  font-family: var(--font-heading);
-}
-
-#root {
-  min-height: 100dvh;
-  width: 100%;
+/* The chat window and its product lightbox (portaled to document.body,
+   so it needs the class applied directly rather than inheriting it)
+   tone the taupe brand accent down a notch — full-strength primary/accent
+   reads as too saturated over long reading sessions, unlike the landing
+   screens where it appears only in small, deliberate bursts. Blended a step
+   toward the palette's sand for a dustier, quieter taupe. */
+.chat-scope {
+  --color-primary: #816e60;
+  --color-accent: #9f8c7d;
+  --color-ring: #816e60;
 }
 
 ::selection {
@@ -72,4 +132,41 @@ h1, h2, h3, h4, h5, h6 {
 
 ::-webkit-scrollbar-thumb:hover {
   background: var(--color-muted-foreground);
+}
+
+@keyframes shimmer-sweep {
+  0% {
+    background-position: 200% 0;
+  }
+  100% {
+    background-position: -200% 0;
+  }
+}
+
+.shimmer {
+  background: linear-gradient(
+    90deg,
+    var(--color-muted-foreground) 40%,
+    var(--color-accent) 50%,
+    var(--color-muted-foreground) 60%
+  );
+  background-size: 250% 100%;
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation: shimmer-sweep 2.2s linear infinite;
+}
+
+@keyframes ambient-drift {
+  0%,
+  100% {
+    transform: translate(0, 0) scale(1);
+  }
+  50% {
+    transform: translate(2%, -3%) scale(1.08);
+  }
+}
+
+.ambient-glow {
+  animation: ambient-drift 14s ease-in-out infinite;
 }
