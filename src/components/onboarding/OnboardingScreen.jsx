@@ -58,6 +58,17 @@ const steps = [
     options: ["Male", "Female", "Other"],
   },
   {
+    id: "size",
+    label: "What size do you wear?",
+    emphasis: "size",
+    type: "options",
+    // Six options stack into an unreadable column as full-width rows, and a
+    // size rail is the one thing shoppers expect to see laid out side by side.
+    layout: "grid",
+    options: ["XS", "S", "M", "L", "XL", "XXL"],
+    hint: "We only show you shirts that are actually in stock in your size.",
+  },
+  {
     id: "payment_method",
     label: "How would you like to pay?",
     emphasis: "pay",
@@ -94,6 +105,7 @@ export default function OnboardingScreen({ onComplete, onSkip }) {
 
   const step = steps[currentStep];
   const isLastStep = currentStep === steps.length - 1;
+  const answeredCount = steps.filter((entry) => values[entry.id]).length;
 
   useEffect(() => {
     if (step?.type !== "options" && inputRef.current) {
@@ -161,28 +173,44 @@ export default function OnboardingScreen({ onComplete, onSkip }) {
         animate={{ opacity: 1, y: 0 }}
         transition={{ duration: 0.6 }}
       >
-        {/* Progress */}
-        <div className="mb-2 flex items-center justify-between">
+        {/* Progress. The bar used to fill segment `i <= currentStep`, which
+            marked the step you were still answering as complete — on the last
+            question every segment read as done. Completed and current are now
+            distinct states, and the counter next to it is the plain fact. */}
+        <div className="mb-3 flex items-baseline justify-between gap-4">
           <span className="text-xs tracking-widest text-muted-foreground uppercase">
-            Step {currentStep + 1} of {steps.length}
+            Step <span className="font-semibold text-primary">{currentStep + 1}</span> of{" "}
+            {steps.length}
+          </span>
+          <span className="text-xs text-muted-foreground">
+            {answeredCount} answered
           </span>
         </div>
         <div className="mb-14 flex gap-1.5">
-          {steps.map((_, i) => (
-            <div
-              key={i}
-              className="h-0.5 flex-1 overflow-hidden rounded-full"
-              style={{ background: "rgba(255,255,255,0.1)" }}
-            >
-              <motion.div
-                className="h-full rounded-full"
-                style={{ background: "var(--color-primary)" }}
-                initial={{ width: 0 }}
-                animate={{ width: i <= currentStep ? "100%" : "0%" }}
-                transition={{ duration: 0.4, ease: "easeOut" }}
-              />
-            </div>
-          ))}
+          {steps.map((entry, i) => {
+            const answered = Boolean(values[entry.id]);
+            const isCurrent = i === currentStep;
+            return (
+              <div
+                key={entry.id}
+                className="h-0.5 flex-1 overflow-hidden rounded-full"
+                style={{ background: "var(--color-border)" }}
+              >
+                <motion.div
+                  className="h-full rounded-full"
+                  style={{
+                    background: answered ? "var(--color-primary)" : "var(--color-primary)",
+                    opacity: answered ? 1 : 0.45,
+                  }}
+                  initial={{ width: 0 }}
+                  // A stub, not a fill, for the question you're looking at: it
+                  // marks where you are without claiming you've answered it.
+                  animate={{ width: answered ? "100%" : isCurrent ? "30%" : "0%" }}
+                  transition={{ duration: 0.4, ease: "easeOut" }}
+                />
+              </div>
+            );
+          })}
         </div>
 
         {/* Step content */}
@@ -202,24 +230,41 @@ export default function OnboardingScreen({ onComplete, onSkip }) {
                   <EmphasizedLabel label={step.label} emphasis={step.emphasis} />
                 </h1>
 
+                {step.hint && (
+                  <p className="-mt-6 mb-8 text-sm text-muted-foreground">{step.hint}</p>
+                )}
+
                 {step.type === "options" ? (
-                  <div className="flex flex-col gap-3">
+                  <div
+                    className={cn(
+                      step.layout === "grid"
+                        ? "grid grid-cols-3 gap-3 sm:grid-cols-6"
+                        : "flex flex-col gap-3"
+                    )}
+                  >
                     {step.options.map((option) => (
                       <motion.button
                         key={option}
                         onClick={() => handleOptionSelect(option)}
                         className={cn(
-                          "w-full rounded-lg border px-6 py-4 text-left text-lg transition-all",
+                          "rounded-lg border transition-all",
+                          step.layout === "grid"
+                            ? "px-2 py-4 text-center text-lg font-medium"
+                            : "w-full px-6 py-4 text-left text-lg",
                           "border-border hover:border-primary",
                           values[step.id] === option ? "border-primary bg-primary/10" : "bg-card"
                         )}
                         whileHover={{ scale: 1.01 }}
                         whileTap={{ scale: 0.99 }}
                       >
-                        <div className="flex items-center justify-between">
-                          <span>{option}</span>
-                          {values[step.id] === option && <Check className="h-5 w-5 text-primary" />}
-                        </div>
+                        {step.layout === "grid" ? (
+                          option
+                        ) : (
+                          <div className="flex items-center justify-between">
+                            <span>{option}</span>
+                            {values[step.id] === option && <Check className="h-5 w-5 text-primary" />}
+                          </div>
+                        )}
                       </motion.button>
                     ))}
                   </div>

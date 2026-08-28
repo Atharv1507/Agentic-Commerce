@@ -4,6 +4,7 @@ import { motion, AnimatePresence } from "framer-motion";
 import { X, ChevronLeft, ChevronRight, Plus, Check } from "lucide-react";
 import ProductCard, { ProductArt } from "./ProductCard";
 import { Button } from "@/components/ui/button";
+import { SIZE_ORDER, cn, resolveCartSize } from "@/lib/utils";
 
 // Click a card and it expands in place into a focused view — siblings dim to the
 // sides, swipe or use the arrow keys to move between results, close to return to
@@ -16,10 +17,57 @@ import { Button } from "@/components/ui/button";
 // older message and into the newer one — the card visibly flew down the
 // transcript. Namespacing by message keeps the click-to-expand animation while
 // making each grid's cards independent.
-export default function ProductGrid({ products, cart, onAddToCart, gridId = "grid" }) {
+// The one line of size copy worth spending space on: whether the shopper's own
+// size is there, and whether it's about to run out. Everything else the rail
+// already says visually.
+function SizeNote({ product, userSize, chosenSize }) {
+  if (!product.sizes) return null;
+
+  // The shopper's own size is the one worth calling out by name — if it isn't
+  // there, that's the headline, whatever they happen to have selected.
+  if (userSize && (product.sizes[userSize] ?? 0) === 0) {
+    const other = (product.available_sizes || []).join(", ");
+    return (
+      <p className="mt-2 text-sm text-destructive">
+        Not available in your size ({userSize}).
+        {other ? ` In stock in ${other}.` : " Sold out in every size."}
+      </p>
+    );
+  }
+
+  if (!chosenSize) return null;
+  const count = product.sizes[chosenSize] ?? 0;
+  const mine = chosenSize === userSize;
+
+  if (count <= 2) {
+    return (
+      <p className="mt-2 text-sm text-primary">
+        Only {count} left in {chosenSize}
+        {mine ? " — your size" : ""}.
+      </p>
+    );
+  }
+  return (
+    <p className="mt-2 text-sm text-muted-foreground">
+      In stock in {chosenSize}
+      {mine ? " — your size" : ""}.
+    </p>
+  );
+}
+
+export default function ProductGrid({ products, cart, onAddToCart, gridId = "grid", userSize }) {
   const [selectedIndex, setSelectedIndex] = useState(null);
+  // Which size the lightbox is currently offering to add. Null until a product
+  // is open, then seeded from the shopper's own size so the common case is one
+  // click — but it stays a visible, changeable choice rather than an
+  // assumption buried in the Add button.
+  const [chosenSize, setChosenSize] = useState(null);
   const isOpen = selectedIndex !== null;
   const selected = isOpen ? products[selectedIndex] : null;
+
+  useEffect(() => {
+    setChosenSize(selected ? resolveCartSize(selected, userSize) : null);
+  }, [selected, userSize]);
 
   useEffect(() => {
     if (!isOpen) return;
@@ -50,9 +98,12 @@ export default function ProductGrid({ products, cart, onAddToCart, gridId = "gri
             <ProductCard
               product={product}
               layoutId={`product-card-${gridId}-${product.id}`}
-              inCart={cart.some((item) => item.id === product.id)}
+              inCart={cart.some(
+                (item) => item.id === product.id && item.size === resolveCartSize(product, userSize)
+              )}
               onAddToCart={onAddToCart}
               onOpen={() => setSelectedIndex(i)}
+              userSize={userSize}
             />
           </motion.div>
         ))}
@@ -62,7 +113,7 @@ export default function ProductGrid({ products, cart, onAddToCart, gridId = "gri
         <AnimatePresence>
           {isOpen && (
             <motion.div
-              className="chat-scope fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-6 backdrop-blur-sm"
+              className="fixed inset-0 z-[60] flex items-center justify-center bg-foreground/50 p-6 backdrop-blur-sm"
               initial={{ opacity: 0 }}
               animate={{ opacity: 1 }}
               exit={{ opacity: 0 }}
@@ -105,28 +156,66 @@ export default function ProductGrid({ products, cart, onAddToCart, gridId = "gri
                     </div>
                   )}
 
+                  {selected.sizes && (
+                    <div>
+                      <p className="mb-2 text-xs tracking-widest text-muted-foreground uppercase">
+                        Select a size
+                      </p>
+                      <div className="flex flex-wrap items-center gap-2">
+                        {SIZE_ORDER.map((size) => {
+                          const count = selected.sizes[size] ?? 0;
+                          const soldOut = count === 0;
+                          return (
+                            <button
+                              key={size}
+                              type="button"
+                              disabled={soldOut}
+                              onClick={() => setChosenSize(size)}
+                              title={soldOut ? `Sold out in ${size}` : `${count} in stock in ${size}`}
+                              className={cn(
+                                "min-w-11 rounded-lg border px-2.5 py-1.5 text-sm font-medium transition-colors",
+                                soldOut &&
+                                  "cursor-not-allowed border-transparent text-muted-foreground/40 line-through",
+                                !soldOut &&
+                                  chosenSize !== size &&
+                                  "border-border hover:border-primary hover:text-foreground",
+                                chosenSize === size && "border-primary bg-primary text-primary-foreground"
+                              )}
+                            >
+                              {size}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <SizeNote product={selected} userSize={userSize} chosenSize={chosenSize} />
+                    </div>
+                  )}
+
                   <span className="text-2xl font-semibold text-primary">₹{selected.price?.toLocaleString()}</span>
 
                   <Button
                     size="lg"
                     className="mt-auto gap-2 rounded-lg"
-                    onClick={() => onAddToCart(selected)}
+                    disabled={!chosenSize}
+                    onClick={() => onAddToCart(selected, chosenSize)}
                   >
-                    {cart.some((item) => item.id === selected.id) ? (
+                    {cart.some((item) => item.id === selected.id && item.size === chosenSize) ? (
                       <>
-                        <Check className="size-4" /> Added to cart
+                        <Check className="size-4" /> Added in {chosenSize}
+                      </>
+                    ) : chosenSize ? (
+                      <>
+                        <Plus className="size-4" /> Add {chosenSize} to Cart
                       </>
                     ) : (
-                      <>
-                        <Plus className="size-4" /> Add to Cart
-                      </>
+                      "Sold out"
                     )}
                   </Button>
                 </div>
 
                 <button
                   onClick={() => setSelectedIndex(null)}
-                  className="absolute top-4 right-4 rounded-full bg-black/40 p-2 text-white transition-colors hover:bg-black/60"
+                  className="absolute top-4 right-4 rounded-full bg-background/85 p-2 text-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-background"
                 >
                   <X className="size-4" />
                 </button>
@@ -134,7 +223,7 @@ export default function ProductGrid({ products, cart, onAddToCart, gridId = "gri
                 {selectedIndex > 0 && (
                   <button
                     onClick={() => setSelectedIndex((i) => i - 1)}
-                    className="absolute top-1/2 left-3 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white transition-colors hover:bg-black/60"
+                    className="absolute top-1/2 left-3 -translate-y-1/2 rounded-full bg-background/85 p-2 text-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-background"
                   >
                     <ChevronLeft className="size-5" />
                   </button>
@@ -142,7 +231,7 @@ export default function ProductGrid({ products, cart, onAddToCart, gridId = "gri
                 {selectedIndex < products.length - 1 && (
                   <button
                     onClick={() => setSelectedIndex((i) => i + 1)}
-                    className="absolute top-1/2 right-3 -translate-y-1/2 rounded-full bg-black/40 p-2 text-white transition-colors hover:bg-black/60"
+                    className="absolute top-1/2 right-3 -translate-y-1/2 rounded-full bg-background/85 p-2 text-foreground shadow-sm backdrop-blur-sm transition-colors hover:bg-background"
                   >
                     <ChevronRight className="size-5" />
                   </button>

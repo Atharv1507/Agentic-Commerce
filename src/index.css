@@ -2,26 +2,34 @@
 @import "tailwindcss";
 
 @theme {
-  /* Porcelain/Charcoal/Sand/Taupe palette: #F1ECE3 (porcelain), #272727
-     (charcoal), #D6C5B2 (sand), #6C584C (taupe) — charcoal anchors the dark
-     surfaces, taupe replaces burgundy as primary/ring, sand carries muted text. */
-  --color-background: #1e1e1e;
-  --color-foreground: #f1ece3;
-  --color-card: #272727;
-  --color-card-foreground: #f1ece3;
-  --color-primary: #6c584c;
-  --color-primary-foreground: #f1ece3;
-  --color-secondary: #3c3632;
-  --color-secondary-foreground: #f1ece3;
-  --color-muted: #242220;
-  --color-muted-foreground: #d6c5b2;
-  --color-accent: #917e70;
-  --color-accent-foreground: #f1ece3;
-  --color-destructive: #a6423e;
-  --color-border: #433b36;
-  --color-ring: #6c584c;
-  --color-input: #433b36;
-  --color-overlay: rgba(20, 19, 18, 0.6);
+  /* Tomato/Platinum/Soft Linen/Gunmetal/Sandy Brown palette:
+     #D03711 (tomato), #E8E9EB (platinum), #E0DFD5 (soft linen), #313638
+     (gunmetal), #F09D51 (sandy brown). Soft linen is the page, platinum the
+     quiet fill, gunmetal all the type, tomato the primary, sandy brown the
+     warm secondary. One derived value earns its keep: --color-accent stays a
+     near-neutral because shadcn spends `accent` on subtle hover surfaces, not
+     brand moments — the brand orange lives in --color-sand. This tomato is
+     dark enough to carry near-white text (4.7:1) and to read as text on linen
+     (3.7:1), so it needs no deepened companion. */
+  --color-background: #e0dfd5;
+  --color-foreground: #313638;
+  --color-card: #f2f1ec;
+  --color-card-foreground: #313638;
+  --color-primary: #d03711;
+  --color-primary-foreground: #fff8f5;
+  --color-secondary: #e8e9eb;
+  --color-secondary-foreground: #313638;
+  --color-muted: #e8e9eb;
+  --color-muted-foreground: #5a6265;
+  --color-accent: #ebe9df;
+  --color-accent-foreground: #313638;
+  --color-sand: #f09d51;
+  --color-sand-foreground: #313638;
+  --color-destructive: #b23a2a;
+  --color-border: #cdcbbe;
+  --color-ring: #d03711;
+  --color-input: #cdcbbe;
+  --color-overlay: rgba(49, 54, 56, 0.45);
 
   /* Single typeface, used across headings and body — personality comes from
      weight/size contrast (see .font-hero / .font-emphasis below), not a second family. */
@@ -100,18 +108,6 @@
   }
 }
 
-/* The chat window and its product lightbox (portaled to document.body,
-   so it needs the class applied directly rather than inheriting it)
-   tone the taupe brand accent down a notch — full-strength primary/accent
-   reads as too saturated over long reading sessions, unlike the landing
-   screens where it appears only in small, deliberate bursts. Blended a step
-   toward the palette's sand for a dustier, quieter taupe. */
-.chat-scope {
-  --color-primary: #816e60;
-  --color-accent: #9f8c7d;
-  --color-ring: #816e60;
-}
-
 ::selection {
   background-color: var(--color-primary);
   color: var(--color-primary-foreground);
@@ -126,7 +122,7 @@
 }
 
 ::-webkit-scrollbar-thumb {
-  background: var(--color-border);
+  background: #b9b7a9;
   border-radius: 3px;
 }
 
@@ -147,7 +143,7 @@
   background: linear-gradient(
     90deg,
     var(--color-muted-foreground) 40%,
-    var(--color-accent) 50%,
+    var(--color-primary) 50%,
     var(--color-muted-foreground) 60%
   );
   background-size: 250% 100%;

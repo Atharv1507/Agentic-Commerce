@@ -15,6 +15,7 @@ const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 
 const GENDER_OPTIONS = ["Male", "Female", "Other"];
 const PAYMENT_OPTIONS = ["UPI", "Card", "COD"];
+const SIZE_OPTIONS = ["XS", "S", "M", "L", "XL", "XXL"];
 
 // How each saved preference reads back to the shopper. Fabric is absent on
 // purpose: it belongs to a product type, not to a person, so it is never saved
@@ -165,6 +166,7 @@ function SettingsForm({ session, onOpenChange, onSave }) {
     phone: session?.phone || "",
     address: session?.address || "",
     gender: session?.gender || "Other",
+    size: session?.size || "",
     payment_method: session?.paymentMethod || "COD",
   });
   const [saving, setSaving] = useState(false);
@@ -185,7 +187,8 @@ function SettingsForm({ session, onOpenChange, onSave }) {
           <div>
             <h3 className="text-sm font-medium text-foreground">Your details</h3>
             <p className="text-xs text-muted-foreground">
-              Used for delivery and checkout. Gender also filters what your agent shows you.
+              Used for delivery and checkout. Gender and size also filter what your agent shows
+              you — it only surfaces items actually in stock in your size.
             </p>
           </div>
 
@@ -212,6 +215,19 @@ function SettingsForm({ session, onOpenChange, onSave }) {
               value={values.gender}
               onChange={(v) => setValues((prev) => ({ ...prev, gender: v }))}
             />
+          </div>
+          <div>
+            <FieldLabel>Size</FieldLabel>
+            <OptionPills
+              options={SIZE_OPTIONS}
+              value={values.size}
+              onChange={(v) => setValues((prev) => ({ ...prev, size: prev.size === v ? "" : v }))}
+            />
+            <p className="mt-1.5 text-xs text-muted-foreground">
+              {values.size
+                ? `Only shirts in stock in ${values.size} will be shown.`
+                : "Not set — you'll be shown items that may not come in your size."}
+            </p>
           </div>
           <div>
             <FieldLabel>Payment method</FieldLabel>

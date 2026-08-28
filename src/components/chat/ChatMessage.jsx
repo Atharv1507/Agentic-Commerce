@@ -16,7 +16,7 @@ const MARKDOWN_COMPONENTS = {
   h1: ({ children }) => <h1 className="mt-2 text-lg font-semibold">{children}</h1>,
   h2: ({ children }) => <h2 className="mt-2 text-base font-semibold">{children}</h2>,
   h3: ({ children }) => <h3 className="mt-2 text-base font-semibold">{children}</h3>,
-  code: ({ children }) => <code className="rounded bg-black/20 px-1.5 py-0.5 text-sm">{children}</code>,
+  code: ({ children }) => <code className="rounded bg-foreground/10 px-1.5 py-0.5 text-sm">{children}</code>,
   blockquote: ({ children }) => (
     <blockquote className="mt-2 border-l-2 border-border pl-3 text-muted-foreground">{children}</blockquote>
   ),

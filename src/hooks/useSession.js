@@ -16,6 +16,7 @@ const GUEST_DEFAULTS = {
   phone: "",
   address: "",
   gender: "",
+  size: "",
   payment_method: "",
 };
 
@@ -41,6 +42,45 @@ export default function useSession() {
     }
   }, [session]);
 
+  // The browser's copy of "you are onboarded" and the server's list of accounts
+  // can disagree — most obviously when the sessions store is cleared on the
+  // server while a browser still holds a session for an account that no longer
+  // exists. Without this check the app goes straight to chat and every message
+  // comes back 404, reading to the shopper as "something went wrong" forever,
+  // fixable only by clearing site data by hand.
+  //
+  // Only a definitive 404 resets. A network error means the backend is down or
+  // unreachable, which says nothing about whether the account exists — wiping a
+  // profile over a failed request would be a far worse bug than the one this
+  // fixes.
+  useEffect(() => {
+    const email = session?.email;
+    if (!email || !session?.isOnboarded) return;
+
+    let active = true;
+    (async () => {
+      let res;
+      try {
+        res = await fetch(`${API_BASE}/session/${encodeURIComponent(email)}`);
+      } catch {
+        return; // Offline or backend down — keep what we have.
+      }
+      if (!active || res.status !== 404) return;
+
+      console.info("Server has no account for this session; starting fresh.");
+      localStorage.removeItem(STORAGE_KEY);
+      setSession(null);
+      setStep("onboarding");
+    })();
+
+    return () => {
+      active = false;
+    };
+    // Runs once per mount: this is a reconciliation on load, not something to
+    // repeat on every profile edit.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
   const submitOnboarding = useCallback(async (data) => {
     const email = (data.email || "").toLowerCase();
 
@@ -54,6 +94,7 @@ export default function useSession() {
           phone: data.phone,
           address: data.address,
           gender: data.gender,
+          size: data.size,
           payment_method: data.payment_method,
         }),
       });
@@ -68,6 +109,7 @@ export default function useSession() {
       phone: data.phone,
       address: data.address,
       gender: data.gender,
+      size: data.size,
       paymentMethod: data.payment_method,
       isOnboarded: true,
     };
@@ -104,6 +146,7 @@ export default function useSession() {
         phone: data.phone ?? session?.phone,
         address: data.address ?? session?.address,
         gender: data.gender ?? session?.gender,
+        size: data.size ?? session?.size,
         payment_method: data.payment_method ?? session?.paymentMethod,
       });
     },
@@ -124,6 +167,7 @@ export default function useSession() {
         phone: "phone",
         address: "address",
         gender: "gender",
+        size: "size",
         payment_method: "paymentMethod",
       };
       let changed = false;
@@ -145,11 +189,11 @@ export default function useSession() {
     setStep("welcome");
   };
 
-  const clearSession = () => {
+  const clearSession = useCallback(() => {
     localStorage.removeItem(STORAGE_KEY);
     setSession(null);
     setStep("onboarding");
-  };
+  }, []);
 
   return {
     session,

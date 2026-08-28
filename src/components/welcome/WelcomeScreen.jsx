@@ -43,18 +43,18 @@ function HistoryStack({ threads, onSelectThread }) {
             style={{
               borderRadius: "1.25rem",
               background:
-                "radial-gradient(130% 130% at 20% 10%, rgba(108,88,76,0.35) 0%, rgba(39,39,39,0.85) 45%, rgba(30,30,30,1) 100%)",
+                "radial-gradient(130% 130% at 20% 10%, rgba(240,157,81,0.38) 0%, rgba(242,241,236,0.92) 48%, rgba(242,241,236,1) 100%)",
             }}
             initial={{ opacity: 0, y: 14, rotate: i % 2 === 0 ? -2 : 2 }}
             animate={{ opacity: 1, y: 0, rotate: 0 }}
             transition={{ delay: 1 + i * 0.08 }}
             whileHover={{ y: -4, scale: 1.02 }}
           >
-            <div className="pointer-events-none absolute inset-0 border border-white/10" style={{ borderRadius: "1.25rem" }} />
+            <div className="pointer-events-none absolute inset-0 border border-border" style={{ borderRadius: "1.25rem" }} />
             <MessageCircle className="relative z-[1] size-4 text-primary/70" />
             <div className="relative z-[1]">
-              <p className="line-clamp-2 text-sm leading-snug text-white/90">{thread.title}</p>
-              <p className="mt-1.5 text-xs text-white/40">{relativeTime(thread.updatedAt)}</p>
+              <p className="line-clamp-2 text-sm leading-snug text-foreground">{thread.title}</p>
+              <p className="mt-1.5 text-xs text-muted-foreground">{relativeTime(thread.updatedAt)}</p>
             </div>
           </motion.button>
         ))}
@@ -111,37 +111,37 @@ export default function WelcomeScreen({ name, onContinue, threads = [], onSelect
         style={{
           borderRadius: "1.75rem",
           background:
-            "radial-gradient(120% 120% at 15% 10%, rgba(145,126,112,0.4) 0%, rgba(39,39,39,0.9) 45%, rgba(30,30,30,1) 100%)",
+            "radial-gradient(120% 120% at 15% 10%, rgba(208,55,17,0.45) 0%, rgba(240,157,81,0.22) 42%, rgba(242,241,236,1) 100%)",
         }}
         initial={{ opacity: 0, scale: 0.94 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ delay: 0.5, duration: 0.7, ease: "easeOut" }}
         whileTap={{ scale: 0.98 }}
       >
-        <div className="pointer-events-none absolute inset-0 border border-white/10" style={{ borderRadius: "1.75rem" }} />
+        <div className="pointer-events-none absolute inset-0 border border-border" style={{ borderRadius: "1.75rem" }} />
 
-        {/* dark blur overlay, fades in on hover — matches the Hover Product Card reference */}
+        {/* frosted overlay, fades in on hover — matches the Hover Product Card reference */}
         <motion.div
-          className="pointer-events-none absolute inset-0 bg-black/0"
-          whileHover={{ backgroundColor: "rgba(0,0,0,0.25)", backdropFilter: "blur(4px)" }}
+          className="pointer-events-none absolute inset-0"
+          whileHover={{ backgroundColor: "rgba(242,241,236,0.45)", backdropFilter: "blur(4px)" }}
           transition={{ duration: 0.3 }}
         />
 
         <div className="relative z-[1] flex items-center justify-between">
-          <span className="text-xs tracking-widest text-white/50 uppercase">Curated for you</span>
-          <ArrowUpRight className="size-4 text-white/50 transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
+          <span className="text-xs tracking-widest text-muted-foreground uppercase">Curated for you</span>
+          <ArrowUpRight className="size-4 text-muted-foreground transition-transform group-hover:-translate-y-0.5 group-hover:translate-x-0.5" />
         </div>
 
         <div className="relative z-[1]">
           <motion.p
-            className="font-hero text-2xl text-white"
+            className="font-hero text-2xl text-foreground"
             initial={{ opacity: 1, y: 0 }}
             whileHover={{ y: -2 }}
           >
-            Step into the <span className="emphasis text-white">chat</span>
+            Step into the <span className="emphasis text-primary">chat</span>
           </motion.p>
           <motion.p
-            className="mt-2 max-w-[16rem] text-sm text-white/60 opacity-0 transition-opacity duration-300 group-hover:opacity-100"
+            className="mt-2 max-w-[16rem] text-sm text-muted-foreground opacity-0 transition-opacity duration-300 group-hover:opacity-100"
           >
             One conversation, endless taste — describe what you want and let the agent do the rest.
           </motion.p>

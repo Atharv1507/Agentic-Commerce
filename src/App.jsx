@@ -13,11 +13,20 @@ import SettingsModal from "@/components/settings/SettingsModal";
 import { useState } from "react";
 
 function App() {
-  const { session, step, completeOnboarding, skipOnboarding, updateProfile, mergeProfile, startShopping, goHome } =
-    useSession();
+  const {
+    session,
+    step,
+    completeOnboarding,
+    skipOnboarding,
+    updateProfile,
+    mergeProfile,
+    startShopping,
+    goHome,
+    clearSession,
+  } = useSession();
   // Details the agent collects mid-chat (an address at checkout, say) land in
   // the local session too, so Settings never shows a stale profile.
-  const chat = useChat(session, { onProfileSynced: mergeProfile });
+  const chat = useChat(session, { onProfileSynced: mergeProfile, onSessionMissing: clearSession });
   const { threads, createThread, switchThread, deleteThread, seenProducts } = useChatThreads(session, chat);
   const [cartOpen, setCartOpen] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
@@ -66,6 +75,7 @@ function App() {
               onGoHome={goHome}
               onOpenSettings={() => setSettingsOpen(true)}
               onAddToCart={chat.addToCart}
+              userSize={session?.size}
             />
 
             <div className="flex min-h-0 min-w-0 flex-1 flex-col">
@@ -80,13 +90,14 @@ function App() {
                 cart={chat.cart}
                 onAddToCart={chat.addToCart}
                 assistantName={session?.assistantName}
+                userSize={session?.size}
               />
             </div>
 
             <LayoutGroup>
               <AnimatePresence>
                 {!cartOpen && chat.cart.length > 0 && (
-                  <FloatingCartButton key="fab" count={chat.cart.length} onClick={() => setCartOpen(true)} />
+                  <FloatingCartButton key="fab" count={chat.cart.reduce((n, item) => n + (item.quantity || 1), 0)} onClick={() => setCartOpen(true)} />
                 )}
                 {cartOpen && (
                   <CartModal
@@ -98,6 +109,7 @@ function App() {
                       setCartOpen(false);
                     }}
                     onRemove={chat.removeFromCart}
+                    onChangeSize={chat.changeCartSize}
                   />
                 )}
               </AnimatePresence>

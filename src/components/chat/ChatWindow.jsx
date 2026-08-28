@@ -26,16 +26,17 @@ export default function ChatWindow({
   cart,
   onAddToCart,
   assistantName,
+  userSize,
 }) {
   const displayName = assistantName || DEFAULT_ASSISTANT_NAME;
 
   return (
-    <div className="chat-scope relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
-      {/* Ambient glow — keeps the shader's warmth alive behind the chat instead of a flat wall of black */}
+    <div className="relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden bg-background">
+      {/* Ambient glow — keeps the shader's warmth alive behind the chat instead of a flat wall of linen */}
       <div className="pointer-events-none absolute inset-0 z-0 overflow-hidden">
-        <div className="ambient-glow absolute -top-32 -right-24 size-96 rounded-full bg-primary/15 blur-3xl" />
+        <div className="ambient-glow absolute -top-32 -right-24 size-96 rounded-full bg-primary/20 blur-3xl" />
         <div
-          className="ambient-glow absolute -bottom-40 -left-20 size-96 rounded-full bg-accent/10 blur-3xl"
+          className="ambient-glow absolute -bottom-40 -left-20 size-96 rounded-full bg-sand/25 blur-3xl"
           style={{ animationDelay: "-7s" }}
         />
       </div>
@@ -102,6 +103,7 @@ export default function ChatWindow({
                         cart={cart}
                         onAddToCart={onAddToCart}
                         gridId={String(msg.id)}
+                        userSize={userSize}
                       />
                     </div>
                   ) : (

@@ -11,7 +11,7 @@ import {
   Check,
   Trash2,
 } from "lucide-react";
-import { cn, DEFAULT_ASSISTANT_NAME, getAssistantInitials } from "@/lib/utils";
+import { cn, resolveCartSize, DEFAULT_ASSISTANT_NAME, getAssistantInitials } from "@/lib/utils";
 import { ProductArt } from "@/components/products/ProductCard";
 
 // Nested buttons aren't valid HTML, so the row is a div with the label as the
@@ -54,7 +54,9 @@ function ThreadRow({ thread, onClick, onDelete }) {
   );
 }
 
-function SeenProductRow({ product, inCart, onAddToCart }) {
+function SeenProductRow({ product, inCart, onAddToCart, userSize }) {
+  const quickSize = resolveCartSize(product, userSize);
+
   return (
     <div className="group flex items-center gap-2.5 rounded-xl px-3 py-2 transition-colors hover:bg-secondary/60">
       <ProductArt product={product} className="size-9 shrink-0 rounded-lg" />
@@ -64,9 +66,12 @@ function SeenProductRow({ product, inCart, onAddToCart }) {
       </div>
       <button
         onClick={() => onAddToCart(product)}
+        disabled={!quickSize}
+        title={quickSize ? `${inCart ? "Remove" : "Add"} ${quickSize}` : "Sold out in every size"}
         className={cn(
           "shrink-0 rounded-lg p-1.5 opacity-0 transition-opacity group-hover:opacity-100",
-          inCart ? "bg-primary/20 text-primary opacity-100" : "bg-primary text-primary-foreground"
+          inCart ? "bg-primary/20 text-primary opacity-100" : "bg-primary text-primary-foreground",
+          !quickSize && "cursor-not-allowed opacity-40"
         )}
         aria-label={inCart ? "Remove from cart" : "Add to cart"}
       >
@@ -87,6 +92,7 @@ export default function ChatSidebar({
   onGoHome,
   onOpenSettings,
   onAddToCart,
+  userSize,
 }) {
   const [collapsed, setCollapsed] = useState(false);
   const displayName = assistantName || DEFAULT_ASSISTANT_NAME;
@@ -163,8 +169,12 @@ export default function ChatSidebar({
                   <SeenProductRow
                     key={product.id}
                     product={product}
-                    inCart={cart.some((item) => item.id === product.id)}
+                    inCart={cart.some(
+                      (item) =>
+                        item.id === product.id && item.size === resolveCartSize(product, userSize)
+                    )}
                     onAddToCart={onAddToCart}
+                    userSize={userSize}
                   />
                 ))}
               </div>

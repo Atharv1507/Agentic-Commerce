@@ -1,5 +1,5 @@
 import { useState, useCallback, useMemo } from "react";
-import { DEFAULT_ASSISTANT_NAME } from "@/lib/utils";
+import { DEFAULT_ASSISTANT_NAME, cartLineKey, resolveCartSize } from "@/lib/utils";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL || "http://localhost:8000";
 const API_URL = `${API_BASE}/chat`;
@@ -66,7 +66,10 @@ function greetingMessage(name, assistantName) {
   };
 }
 
-export default function useChat(session, { initialMessages, initialCart, onProfileSynced } = {}) {
+export default function useChat(
+  session,
+  { initialMessages, initialCart, onProfileSynced, onSessionMissing } = {}
+) {
   // Raw state keeps the greeting placeholder-only; the name gets interpolated
   // in the `messages` memo below so it always reflects the live session,
   // instead of patching stored state via an effect when the name arrives late.
@@ -158,6 +161,15 @@ export default function useChat(session, { initialMessages, initialCart, onProfi
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(body),
           });
+          // The server doesn't know this account — its session store was
+          // cleared out from under a browser that still thinks it's onboarded.
+          // Send them back through setup instead of answering every message
+          // with a generic failure they can't act on.
+          if (res.status === 404) {
+            setIsTyping(false);
+            onSessionMissing?.();
+            return;
+          }
           data = await res.json();
         }
 
@@ -168,6 +180,13 @@ export default function useChat(session, { initialMessages, initialCart, onProfi
         // them without the shopper entering anything twice.
         if (data.profile && onProfileSynced) {
           onProfileSynced(data.profile);
+        }
+
+        // The agent can change the cart itself (a size swap after a refused
+        // checkout). It only sends `cart` back on the turns where it did, so
+        // this replaces the local copy rather than the two drifting apart.
+        if (Array.isArray(data.cart)) {
+          setCart(data.cart);
         }
 
         const checkoutResult = data.tool_results?.find((tr) => tr.tool === "checkout_cart")?.result;
@@ -251,29 +270,78 @@ export default function useChat(session, { initialMessages, initialCart, onProfi
     [sendMessage]
   );
 
+  // A cart line is a product IN A SIZE. The same shirt in M and in L are two
+  // lines, so every mutation below is keyed on the pair — keying on the
+  // product alone made a second size silently replace the first.
   const addToCart = useCallback(
-    (product) => {
+    (product, size) => {
+      const chosen = size || resolveCartSize(product, session?.size);
+      if (!chosen) return;
+
       setCart((prev) => {
-        const exists = prev.some((p) => p.id === product.id);
+        const line = { ...product, size: chosen, quantity: 1 };
+        const key = cartLineKey(line);
+        const exists = prev.some((p) => cartLineKey(p) === key);
+
         if (exists) {
-          fetch(`${API_BASE}/cart/${session.email}/${product.id}`, { method: "DELETE" }).catch(() => {});
-          return prev.filter((p) => p.id !== product.id);
+          fetch(
+            `${API_BASE}/cart/${session.email}/${product.id}?size=${encodeURIComponent(chosen)}`,
+            { method: "DELETE" }
+          ).catch(() => {});
+          return prev.filter((p) => cartLineKey(p) !== key);
         }
+
         fetch(`${API_BASE}/cart/${session.email}`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify(product),
+          body: JSON.stringify(line),
         }).catch(() => {});
-        return [...prev, product];
+        return [...prev, line];
       });
     },
     [session]
   );
 
   const removeFromCart = useCallback(
-    (productId) => {
-      setCart((prev) => prev.filter((p) => p.id !== productId));
-      fetch(`${API_BASE}/cart/${session.email}/${productId}`, { method: "DELETE" }).catch(() => {});
+    (productId, size) => {
+      setCart((prev) =>
+        prev.filter((p) => !(p.id === productId && (size === undefined || p.size === size)))
+      );
+      const query = size ? `?size=${encodeURIComponent(size)}` : "";
+      fetch(`${API_BASE}/cart/${session.email}/${productId}${query}`, { method: "DELETE" }).catch(
+        () => {}
+      );
+    },
+    [session]
+  );
+
+  // Swapping a line's size can collide with a line that's already in that
+  // size, so it merges rather than producing two lines the shopper has to
+  // reconcile at checkout. The optimistic update mirrors what the server does.
+  const changeCartSize = useCallback(
+    (productId, fromSize, toSize) => {
+      if (fromSize === toSize) return;
+
+      setCart((prev) => {
+        const line = prev.find((p) => p.id === productId && p.size === fromSize);
+        if (!line) return prev;
+        const target = prev.find((p) => p.id === productId && p.size === toSize);
+
+        if (target) {
+          return prev
+            .filter((p) => p !== line)
+            .map((p) =>
+              p === target ? { ...p, quantity: (p.quantity || 1) + (line.quantity || 1) } : p
+            );
+        }
+        return prev.map((p) => (p === line ? { ...p, size: toSize } : p));
+      });
+
+      fetch(`${API_BASE}/cart/${session.email}/size`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ product_id: productId, size: fromSize, new_size: toSize }),
+      }).catch(() => {});
     },
     [session]
   );
@@ -298,6 +366,7 @@ export default function useChat(session, { initialMessages, initialCart, onProfi
     skipPreferences,
     addToCart,
     removeFromCart,
+    changeCartSize,
     confirmOrder,
     restoreThread,
   };
