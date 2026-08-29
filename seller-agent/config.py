@@ -37,7 +37,19 @@ def _parse_buyer_keys(raw: str) -> dict[str, str]:
 #
 # The trade is deliberate: a real deployment MUST set both env vars, and gets
 # a loud warning on every boot until it does.
-_DEMO_BUYER_KEYS = "demo-personal-agent-key:personal_agent"
+#
+# Two buyer slots, not one. The bundled personal-agent has its own, and
+# `demo-external-agent-key` exists so that a buyer agent nobody has met can
+# actually transact: the manifest tells a stranger to "contact the merchant"
+# for a key, which is a dead end in a demo where there is no merchant to
+# contact. `.env.example` has advertised this second slot for a while; the
+# default here did not include it, so a fresh clone refused the very
+# third-party buyer this service is built to serve.
+_DEMO_EXTERNAL_BUYER_KEY = "demo-external-agent-key"
+_DEMO_BUYER_KEYS = (
+    f"demo-personal-agent-key:personal_agent,"
+    f"{_DEMO_EXTERNAL_BUYER_KEY}:external_demo_agent"
+)
 _DEMO_MERCHANT_KEY = "demo-merchant-key"
 
 _buyer_keys_env = os.getenv("BUYER_API_KEYS", "")
@@ -46,6 +58,17 @@ _merchant_key_env = os.getenv("MERCHANT_API_KEY", "")
 # Which buyer agents may talk to this merchant at all.
 BUYER_API_KEYS: dict[str, str] = _parse_buyer_keys(_buyer_keys_env or _DEMO_BUYER_KEYS)
 BUYER_KEY_HEADER = "X-Buyer-Key"
+
+# The open, self-serve key an unknown buyer agent may use, published in the
+# discovery manifest — or None when this deployment has not configured one.
+#
+# Derived from BUYER_API_KEYS rather than assumed, so the manifest can never
+# advertise a key that would 401. A deployment that sets BUYER_API_KEYS without
+# this slot simply publishes no key and the manifest falls back to telling the
+# caller to contact the merchant, which is the correct answer there.
+PUBLIC_DEMO_BUYER_KEY: str | None = (
+    _DEMO_EXTERNAL_BUYER_KEY if _DEMO_EXTERNAL_BUYER_KEY in BUYER_API_KEYS else None
+)
 
 # Separate credential for the merchant's own books. A buyer key must never
 # read revenue or per-buyer attribution: those are the merchant's numbers, and

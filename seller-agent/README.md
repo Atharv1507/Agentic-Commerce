@@ -47,7 +47,12 @@ Two separate credentials, because they answer different questions:
 **Both are optional for a local demo.** Left unset, the service falls back to
 the public demo keys already committed in `.env.example` — which
 `personal-agent` also defaults to — so a fresh clone runs end-to-end with no
-setup step. It warns on every boot and reports `using_demo_keys: true` on
+setup step. Two buyer slots are defaulted, not one: `personal_agent` for the
+bundled buyer, and `external_demo_agent` for a buyer agent nobody has met.
+When that second key is live, the manifest publishes it as `auth.demo_key`, so
+an unknown third-party agent can get from discovery to its first authenticated
+call without anyone to contact. It is read back out of the configured key
+table, so the manifest can never advertise a key that would 401. It warns on every boot and reports `using_demo_keys: true` on
 `/health` while in that mode. Setting either variable replaces the demo value
 outright, so the demo key stops working the moment you configure a real one.
 
@@ -83,6 +88,15 @@ read how to get a key before it has one.
    LLM calls. They need to be exact, fast and always correct; a model that
    paraphrases "0 in L" as "in stock" would let the shop take money for a
    garment it cannot send.
+6b. Colour and fabric are **ranking signals, not filters** — a search for
+   green legitimately returns black when little green ranks well. Each product
+   therefore carries `matches_color` / `color_match` (`exact` / `adjacent` /
+   `none`) and `matches_material`, and the result carries a `constraint_fit`
+   summary counting how many actually match. `applied_constraints` on its own
+   reads as a promise the results keep, and for these two it is not one: a
+   buyer agent with no eyes on the images cannot tell "Olive Green" from "Jet
+   Black" by parsing free text, and buying the wrong colour is the expensive
+   mistake.
 7. `/order` prices the basket via `campaigns.price_basket`, creates the
    Razorpay order, and writes it to the ledger against the calling buyer's id.
 8. `/order` also returns a **`payment_url`** — a Razorpay payment link bound to
@@ -91,7 +105,10 @@ read how to get a key before it has one.
    only be paid by the *browser* Checkout SDK, which needs a DOM and a human at
    a card form. A headless buyer agent has neither, so it could negotiate,
    price and create an order and then be stranded. The link closes that, and
-   the merchant's `key_secret` still never leaves this service.
+   the merchant's `key_secret` still never leaves this service. The order also
+   returns `razorpay_key_id`, the merchant's *publishable* key, so the browser
+   Checkout rail the `payment_note` describes is actually usable — it named a
+   `key_id` it never supplied.
 9. A payment link collects through an order **Razorpay creates itself**, so the
    payment never attaches to the order in the ledger — `order.fetch` on our id
    reports "created" forever no matter how completely the link was paid.
@@ -130,6 +147,26 @@ the merchant margin, never overcharge a shopper.
 | POST | `/payment/verify` | buyer | Non-LLM: confirm payment on either rail (browser checkout or payment link), settle the ledger |
 | GET | `/merchant/analytics` | **merchant** | Revenue, AOV, revenue per buyer agent, attach rate, campaign impact |
 | GET | `/health` | none | Liveness, active session count, and whether demo keys are in use |
+
+### Refusals
+
+`/order` and `/payment/verify` answer a refusal with a status code that means
+it, not a 200 with an `error` key — a caller that checks the status, which is
+the normal thing to do, used to read "not available in M" as a sale.
+
+| `error` | Status | Why |
+|---|---|---|
+| `product_not_found` | 404 | The id does not exist. Search again; do not retry it |
+| `invalid_size` / `no_valid_products` | 422 | The request itself is malformed |
+| `size_unavailable` / `out_of_stock` | 409 | Request is fine, live stock conflicts — pick another size |
+| `order_creation_failed` / `verification_failed` | 502 | Razorpay failed or was unreachable; retry is reasonable |
+
+The body is unchanged and every refusal carries a `message` saying what to do
+next, so callers that already read `error` keep working. An unclassified
+refusal keeps 200 rather than being guessed at with a misleading code. On the
+buyer's side `create_seller_order` passes a structured 4xx body straight
+through instead of collapsing it into `seller_unreachable` — the shopper needs
+"not available in L, try M", not "the shop is down".
 
 `search_catalog`, `price_range`, `check_stock`, `evaluate_offers` and
 `create_order` are also OpenAI function-calling tools (`schemas.py`), executed

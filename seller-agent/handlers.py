@@ -15,8 +15,10 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
+RAZORPAY_KEY_ID = os.getenv("RAZORPAY_KEY_ID")
+
 razorpay_client = razorpay.Client(
-    auth=(os.getenv("RAZORPAY_KEY_ID"), os.getenv("RAZORPAY_KEY_SECRET"))
+    auth=(RAZORPAY_KEY_ID, os.getenv("RAZORPAY_KEY_SECRET"))
 )
 
 
@@ -112,7 +114,14 @@ def check_stock(product_id: str, size: Optional[str] = None) -> dict[str, Any]:
     product = get_product_by_id(product_id)
     if not product:
         logger.warning(f"Product not found: {product_id}")
-        return {"error": "product_not_found"}
+        return {
+            "error": "product_not_found",
+            "product_id": product_id,
+            "message": (
+                f"No product with id '{product_id}' exists in this catalogue. Search "
+                f"again for a current id rather than retrying this one."
+            ),
+        }
 
     counts = product["sizes"]
     in_size = available_sizes(product)
@@ -301,12 +310,31 @@ def create_order(
         product = get_product_by_id(pid)
         if not product:
             logger.warning(f"Product not found for order: {pid}")
-            return {"error": "product_not_found", "product_id": pid}
+            # Carries a message like every other refusal here: a caller that
+            # only reads `error` learns nothing it can act on, and the useful
+            # instruction is "search again", not "retry".
+            return {
+                "error": "product_not_found",
+                "product_id": pid,
+                "message": (
+                    f"No product with id '{pid}' exists in this catalogue. Product ids "
+                    f"come from search results and go stale — search again rather than "
+                    f"retrying this id."
+                ),
+            }
 
         wanted = canonical_size(sizes.get(pid)) or fallback_size
         stock = check_stock(pid, wanted)
         if stock.get("error"):
-            return {"error": "product_not_found", "product_id": pid}
+            return {
+                "error": "product_not_found",
+                "product_id": pid,
+                "message": (
+                    f"No product with id '{pid}' exists in this catalogue. Product ids "
+                    f"come from search results and go stale — search again rather than "
+                    f"retrying this id."
+                ),
+            }
         if not stock.get("in_stock"):
             logger.warning(f"Out of stock: {pid} size={wanted or 'any'}")
             return {
@@ -407,12 +435,19 @@ def create_order(
             # browser pays here; one driving a browser can ignore it, or fall
             # back to it when the checkout SDK won't open.
             **link,
+            # The *publishable* half of the merchant's Razorpay credentials —
+            # the same value a shop embeds in its own checkout page, and
+            # useless without the secret, which never leaves this service.
+            # `payment_note` has always told callers to pass `order_id` to
+            # Checkout "with the merchant's public key_id" without ever
+            # supplying one, which made that rail impossible to actually use.
+            **({"razorpay_key_id": RAZORPAY_KEY_ID} if RAZORPAY_KEY_ID else {}),
             "payment_note": (
                 "Two ways to pay this order, both settling the same `order_id`: open "
                 "`payment_url` (works anywhere, no SDK or credentials needed), or pass "
-                "`order_id` to Razorpay's browser Checkout with the merchant's public "
-                "key_id. Either way, confirm with POST /payment/verify before treating "
-                "the order as paid."
+                "`order_id` to Razorpay's browser Checkout with `razorpay_key_id`, the "
+                "merchant's publishable key, returned above. Either way, confirm with "
+                "POST /payment/verify before treating the order as paid."
                 if link
                 else "This order has no payment link; it must be paid through Razorpay's "
                 "browser Checkout using `order_id`."
@@ -628,7 +663,7 @@ def execute_tool(
         # Echoing the constraints back lets the Personal Agent verify what was
         # actually applied rather than trusting that its brief survived the
         # trip through this agent's tool-call reasoning.
-        return {
+        result: dict[str, Any] = {
             "products": products,
             "applied_constraints": {
                 k: arguments.get(k)
@@ -636,6 +671,40 @@ def execute_tool(
                 if arguments.get(k)
             },
         }
+        # `applied_constraints` alone reads as a promise the results keep, and
+        # for colour and material it is not one: both are ranking signals, so
+        # a search for green legitimately returns black when little green
+        # ranks well. A caller reading only the echo would believe every row
+        # matched. These counts say plainly how many actually do, so a buyer
+        # agent that cannot see the images does not have to re-parse free-text
+        # colour names ("Olive Green", "Jet Black") to find out.
+        soft: dict[str, Any] = {}
+        if arguments.get("colors"):
+            exact = sum(1 for p in products if p.get("matches_color"))
+            soft["colors"] = {
+                "kind": "ranking_signal",
+                "exact_matches": exact,
+                "of": len(products),
+                "note": (
+                    f"{exact} of {len(products)} results are actually in the requested "
+                    f"colour(s). Check `matches_color` per product — the rest are the "
+                    f"closest available alternatives, not matches."
+                ),
+            }
+        if arguments.get("materials"):
+            fabric = sum(1 for p in products if p.get("matches_material"))
+            soft["materials"] = {
+                "kind": "ranking_signal",
+                "exact_matches": fabric,
+                "of": len(products),
+                "note": (
+                    f"{fabric} of {len(products)} results are actually in the requested "
+                    f"fabric(s). Check `matches_material` per product."
+                ),
+            }
+        if soft:
+            result["constraint_fit"] = soft
+        return result
     elif tool_name == "price_range":
         return price_range(arguments["query"], gender=arguments.get("gender"))
     elif tool_name == "check_stock":

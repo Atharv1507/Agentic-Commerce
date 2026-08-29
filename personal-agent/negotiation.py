@@ -280,6 +280,23 @@ def create_seller_order(
                 json=payload,
                 headers=SELLER_AUTH_HEADERS,
             )
+            # A 4xx from the merchant is a considered refusal, not a transport
+            # failure, and its body is the useful part: "not available in L,
+            # try M". Raising on it would collapse that into
+            # `seller_unreachable` and tell the shopper the shop was down when
+            # it was in fact answering precisely. Only a body we cannot read as
+            # a structured refusal falls through to the generic path below.
+            if response.is_error:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict) and body.get("error"):
+                    logger.info(
+                        f"Merchant refused the order ({response.status_code}): "
+                        f"{body.get('error')}"
+                    )
+                    return body
             response.raise_for_status()
             return response.json()
     except Exception as e:
@@ -312,6 +329,17 @@ def verify_seller_payment(order_id: str, payment_id: Optional[str] = None) -> di
                 json={"order_id": order_id, "payment_id": payment_id},
                 headers=SELLER_AUTH_HEADERS,
             )
+            # Same reasoning as create_seller_order: the merchant's own
+            # `verification_failed` (Razorpay said no) must stay distinct from
+            # `seller_unreachable` (we could not ask), because the two call for
+            # different things to be said to a shopper.
+            if response.is_error:
+                try:
+                    body = response.json()
+                except ValueError:
+                    body = None
+                if isinstance(body, dict) and body.get("error"):
+                    return body
             response.raise_for_status()
             return response.json()
     except Exception as e:

@@ -4,7 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI
+from fastapi import Depends, FastAPI, Response
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -20,6 +20,7 @@ from config import (
     MERCHANT_KEY_HEADER,
     MERCHANT_NAME,
     MERCHANT_PRICE_RANGE_INR,
+    PUBLIC_DEMO_BUYER_KEY,
     SYSTEM_PROMPT,
     USING_DEMO_KEYS,
     OPENAI_MODEL,
@@ -355,9 +356,47 @@ async def delete_session(
     return {"status": "ok", "deleted": existed}
 
 
+# Which HTTP status each refusal from `create_order` / `verify_payment` should
+# carry. These used to all come back 200 with an `error` key in the body, which
+# is fine for a caller that reads the body and wrong for every other one: a
+# third-party buyer agent checking the status code — the normal thing to do —
+# read "not available in M" as a successful order. The body is unchanged, so
+# callers that already inspect `error` keep working; the status is now simply
+# also true.
+_ERROR_STATUS = {
+    # The product does not exist. Nothing the caller can retry.
+    "product_not_found": 404,
+    # The request itself is malformed — a size this shop does not stock.
+    "invalid_size": 422,
+    "no_valid_products": 422,
+    # The request is well-formed but conflicts with live state: the product
+    # exists, the size is real, there are none left. Distinct from 422 because
+    # the fix is to pick another size, not to correct the request.
+    "size_unavailable": 409,
+    "out_of_stock": 409,
+    # Razorpay itself failed or could not be reached. Not the caller's fault,
+    # and worth retrying.
+    "order_creation_failed": 502,
+    "verification_failed": 502,
+}
+# Anything not listed keeps 200 — a refusal we have not classified must not be
+# guessed at with a status code that tells the caller the wrong thing.
+DEFAULT_ERROR_STATUS = 200
+
+
+def _error_status(result: dict[str, Any]) -> int:
+    """The HTTP status a handler result should be returned with."""
+    error = result.get("error")
+    if not error:
+        return 200
+    return _ERROR_STATUS.get(error, DEFAULT_ERROR_STATUS)
+
+
 @app.post("/order")
 async def create_order_route(
-    request: OrderRequest, buyer_id: str = Depends(require_buyer)
+    request: OrderRequest,
+    response: Response,
+    buyer_id: str = Depends(require_buyer),
 ) -> dict[str, Any]:
     """Create a Razorpay order for a buyer agent, and record it in the ledger.
 
@@ -390,6 +429,8 @@ async def create_order_route(
         buyer_context=request.buyer_context.model_dump() if request.buyer_context else None,
     )
 
+    response.status_code = _error_status(result)
+
     if result.get("order_id"):
         ledger.record_order(
             order_id=result["order_id"],
@@ -408,7 +449,9 @@ async def create_order_route(
 
 @app.post("/payment/verify")
 async def verify_payment_route(
-    request: VerifyPaymentRequest, buyer_id: str = Depends(require_buyer)
+    request: VerifyPaymentRequest,
+    response: Response,
+    buyer_id: str = Depends(require_buyer),
 ) -> dict[str, Any]:
     """Confirm a payment with Razorpay and settle the order in the ledger.
 
@@ -423,6 +466,7 @@ async def verify_payment_route(
         The payment status.
     """
     result = verify_payment(request.order_id, request.payment_id)
+    response.status_code = _error_status(result)
 
     if result.get("status") in ("captured", "paid"):
         # Keyed off Razorpay's own answer rather than the caller's claim: a
@@ -560,10 +604,20 @@ async def agent_card() -> dict[str, Any]:
         "auth": {
             "type": "api_key_header",
             "header": BUYER_KEY_HEADER,
+            # A buyer agent that has never met this merchant needs a key it can
+            # actually use. "Contact the merchant" is a dead end in a demo with
+            # no merchant to contact, and it stranded exactly the unknown
+            # third-party caller this service exists to serve. `demo_key` is
+            # read back out of the configured key table, so it is only ever
+            # published when it genuinely works.
             "how_to_obtain": (
-                "Contact the merchant for a buyer key. This demo build ships with a "
-                "static test key; a production merchant would issue one per buyer agent."
+                f"Send the key below as `{BUYER_KEY_HEADER}` on every authenticated "
+                f"call — it is an open demo key, published deliberately, and needs no "
+                f"registration. A production merchant would issue one per buyer agent."
+                if PUBLIC_DEMO_BUYER_KEY
+                else "Contact the merchant for a buyer key, issued one per buyer agent."
             ),
+            **({"demo_key": PUBLIC_DEMO_BUYER_KEY} if PUBLIC_DEMO_BUYER_KEY else {}),
             "note": (
                 "Your key identifies your agent. Session ids you send are namespaced "
                 "under it, so they cannot collide with another buyer's."
@@ -594,9 +648,9 @@ async def agent_card() -> dict[str, Any]:
                     "Creates the Razorpay order. Re-validates stock and applies any "
                     "qualifying campaign. Read `amount_inr` for rupees; `amount` is paise. "
                     "Returns `payment_url` — open or forward it to pay with no browser "
-                    "SDK and no credentials — as well as `order_id`, for a caller that "
-                    "IS driving a browser and wants Razorpay's Checkout with the "
-                    "merchant's public key_id. Both settle the same order."
+                    "SDK and no credentials — as well as `order_id` and "
+                    "`razorpay_key_id`, for a caller that IS driving a browser and wants "
+                    "Razorpay's Checkout. Both settle the same order."
                 ),
                 "request_schema": OrderRequest.model_json_schema(),
             },

@@ -348,13 +348,15 @@ def search_catalog(
                 parts["brand"] = _brand_score(product["brand"], brands)
 
             score = sum(active_weights[k] * v for k, v in parts.items()) / weight_total
-            scored.append((score, product, parts.get("material", 0.0) > 0))
+            scored.append(
+                (score, product, parts.get("material", 0.0) > 0, parts.get("color", 0.0))
+            )
 
         scored.sort(key=lambda pair: pair[0], reverse=True)
 
         products: list[dict] = []
         brand_counts: dict[str, int] = {}
-        for score, product, material_ok in scored:
+        for score, product, material_ok, color_score in scored:
             brand = (product["brand"] or "").lower()
             # A brand cap would fight the shopper if they asked for that brand.
             if not brands and brand_counts.get(brand, 0) >= MAX_PER_BRAND:
@@ -380,6 +382,29 @@ def search_catalog(
                     # Lets the caller say "none of these are actually linen"
                     # instead of quietly presenting cotton as a match.
                     **({"matches_material": material_ok} if materials else {}),
+                    # Same job for colour, and needed for the same reason:
+                    # colour is a ranking signal here, not a hard filter, so a
+                    # result set for "green" legitimately contains black. A
+                    # buyer agent with no eyes on the images cannot tell which
+                    # is which from `color` alone ("Olive Green" and "Jet
+                    # Black" are both free text), and buying the wrong colour
+                    # is the expensive mistake. `exact` is the requested colour
+                    # group, `adjacent` a neighbouring shade, `none` a
+                    # non-match shown because nothing better ranked.
+                    **(
+                        {
+                            "matches_color": color_score >= 1.0,
+                            "color_match": (
+                                "exact"
+                                if color_score >= 1.0
+                                else "adjacent"
+                                if color_score > 0
+                                else "none"
+                            ),
+                        }
+                        if colors
+                        else {}
+                    ),
                 }
             )
             if len(products) >= top_k:
