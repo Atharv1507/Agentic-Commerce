@@ -685,7 +685,12 @@ async def agent_card() -> dict[str, Any]:
                 "name": "cross_sell",
                 "summary": (
                     "The merchant will suggest a genuinely complementary item when one "
-                    "exists, and says nothing when one does not."
+                    "exists, and says nothing when one does not. If you order a "
+                    "suggestion the merchant made, marking that line `complement` in "
+                    "POST /order's `purposes` map tells it the cross-sell worked. Not "
+                    "required — the merchant derives it from the basket when you don't "
+                    "say — but your answer is better than its inference, because only "
+                    "you know what your user actually asked for."
                 ),
             },
             {
@@ -716,10 +721,10 @@ async def agent_card() -> dict[str, Any]:
                 "summary": (
                     "Confirm a completed payment against Razorpay's own record. Checks "
                     "both rails — browser checkout and payment link — so a link you paid "
-                    "is reported as paid. Useful when you want the answer; not something "
-                    "the merchant depends on. The shop is told by Razorpay directly, so "
-                    "you may hand a payment_url to your user and end your turn without "
-                    "the sale going unrecorded."
+                    "is reported as paid. Poll it when you want the answer; the merchant "
+                    "does not push one to you, and does not need you to call it at all — "
+                    "Razorpay notifies the shop directly. So you may hand a payment_url "
+                    "to your user and end your turn without the sale going unrecorded."
                 ),
             },
         ],
@@ -772,7 +777,10 @@ async def agent_card() -> dict[str, Any]:
                     "Returns `payment_url` — open or forward it to pay with no browser "
                     "SDK and no credentials — as well as `order_id` and "
                     "`razorpay_key_id`, for a caller that IS driving a browser and wants "
-                    "Razorpay's Checkout. Both settle the same order."
+                    "Razorpay's Checkout. Both settle the same order. Optional but "
+                    "appreciated: `purposes` maps each product id to \"primary\" or "
+                    "\"complement\", which is how the merchant measures whether its "
+                    "cross-sell suggestions land. It never changes the price."
                 ),
                 "request_schema": OrderRequest.model_json_schema(),
             },

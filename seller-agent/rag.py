@@ -444,6 +444,14 @@ def get_product_by_id(product_id: str) -> Optional[dict]:
         "gender": product["gender"],
         "description": product["description"],
         "image": product["image"],
+        # Carried because `campaigns.product_type` classifies shirt vs T-shirt
+        # off `tags`, and dropping them here silently made every product a
+        # shirt. That killed the shirt + T-shirt bundle campaign outright — a
+        # mixed basket could never satisfy `{"shirt", "tshirt"} <= types` — and
+        # stamped `type: "shirt"` on every T-shirt line in the ledger. Not
+        # exposed to buyer agents: the callers that return product data to them
+        # (`check_stock`, `/order`'s lines) each build their own dict.
+        "tags": list(product.get("tags") or []),
         "sizes": dict(product["sizes"]),
         "available_sizes": available_sizes(product),
     }

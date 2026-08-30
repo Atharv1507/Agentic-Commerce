@@ -44,6 +44,7 @@ import re
 from typing import Any, Optional
 
 import ledger
+from campaigns import campaign_by_id, product_type
 from handlers import LEDGER_NOTES_VERSION, razorpay_client
 from rag import get_product_by_id
 
@@ -105,6 +106,7 @@ def _lines_from_notes(notes: dict[str, str]) -> list[dict[str, Any]]:
 
             quantity = field(2)
             price = field(4)
+            purpose_source = field(5)
             lines.append(
                 {
                     "id": product_id,
@@ -114,6 +116,10 @@ def _lines_from_notes(notes: dict[str, str]) -> list[dict[str, Any]]:
                     # The price this order was struck at, which may no longer
                     # be the catalogue's price. Kept in preference to it.
                     "price": int(price) if price and price.isdigit() else None,
+                    # Whether the buyer declared the purpose or the shop
+                    # derived it. Absent on the earliest v1 notes, which
+                    # predate the field.
+                    "purpose_source": purpose_source,
                 }
             )
     return lines
@@ -170,6 +176,7 @@ def _enrich(line: dict[str, Any]) -> dict[str, Any]:
         **line,
         "name": product.get("name"),
         "brand": product.get("brand"),
+        "type": product_type(product),
         # The order's own price wins; the catalogue's is the fallback, since a
         # price can have moved since the sale.
         "price": line.get("price") or product.get("price"),
@@ -277,11 +284,19 @@ def _rebuild_record(
         "amount_inr": amount_inr,
         "currency": order.get("currency") or "INR",
         "lines": [_enrich(line) for line in lines],
-        # Only the id survives in notes, so the campaign's description and
-        # exact rupee saving are gone. Naming the id is honest; reconstructing
-        # prose the campaign engine would have written is not.
+        # Only the id survives in notes. `campaign_by_id` puts the kind and a
+        # generic description back — those are properties of the campaign, not
+        # of this basket, so looking them up is recovery rather than invention.
+        # The order-specific wording ("saves Rs 1,359 on this Rs 13,598 order")
+        # is genuinely gone, and is not reconstructed.
         "applied_campaign": (
-            {"id": campaign_id, "discount_inr": discount_inr} if campaign_id else None
+            {
+                "id": campaign_id,
+                "discount_inr": discount_inr,
+                **(campaign_by_id(campaign_id) or {}),
+            }
+            if campaign_id
+            else None
         ),
         "created_at": float(_int_or_none(order.get("created_at")) or 0),
         # Razorpay does not expose when the order flipped to paid, only when it

@@ -22,6 +22,7 @@ Two invariants worth stating because they are the ones that would hurt:
 """
 
 import logging
+from collections import Counter
 from typing import Any, Optional
 
 logging.basicConfig(level=logging.INFO)
@@ -55,6 +56,57 @@ WIN_BACK_RATE = 0.15
 WIN_BACK_DAYS = 30
 
 
+# What each campaign id *is*, independent of any one basket.
+#
+# `evaluate_campaigns` builds a campaign's `kind` and `description` together
+# with the rupee figures for a specific basket, so both live inside that
+# function and neither can be reproduced from an id alone. That is fine while
+# the ledger holds the whole record — and a problem once an order has to be
+# rebuilt from Razorpay's `notes`, which only have room for the id. Without
+# this table the merchant's per-campaign breakdown came back with correct
+# totals under a blank name.
+#
+# Only the id-stable parts are here. The description is generic on purpose: the
+# order-specific one ("saves Rs 1,359 on this Rs 13,598 order") is a fact about
+# a basket, and inventing those numbers back would be worse than a general
+# label that is true.
+CAMPAIGN_REGISTRY: dict[str, dict[str, str]] = {
+    "threshold_10": {
+        "kind": "threshold_discount",
+        "description": f"{THRESHOLD_RATE:.0%} off orders over Rs {THRESHOLD_INR:,}.",
+    },
+    "shirt_tshirt_bundle": {
+        "kind": "bundle",
+        "description": f"Shirt + T-shirt bundle — Rs {BUNDLE_SAVING_INR:,} off for taking one of each.",
+    },
+    "cross_sell_pair": {
+        "kind": "cross_sell",
+        "description": "Suggested pairing across the shop's two categories.",
+    },
+    "first_order_welcome": {
+        "kind": "lifecycle",
+        "description": f"First-order welcome — {FIRST_ORDER_RATE:.0%} off.",
+    },
+    "win_back": {
+        "kind": "lifecycle",
+        "description": f"Win-back for a shopper who has not ordered in {WIN_BACK_DAYS} days.",
+    },
+}
+
+
+def campaign_by_id(campaign_id: Optional[str]) -> Optional[dict[str, str]]:
+    """The kind and a generic description for a campaign id.
+
+    For rebuilding an order whose full campaign record was lost. Returns None
+    for an id this shop no longer runs, so a caller can say "withdrawn
+    campaign" rather than render a blank.
+    """
+    if not campaign_id:
+        return None
+    entry = CAMPAIGN_REGISTRY.get(campaign_id)
+    return dict(entry) if entry else None
+
+
 def product_type(product: dict[str, Any]) -> str:
     """Classify a catalogue product as a t-shirt or a shirt.
 
@@ -65,6 +117,70 @@ def product_type(product: dict[str, Any]) -> str:
     """
     tags = product.get("tags") or []
     return "tshirt" if "tshirt" in tags else "shirt"
+
+
+def derive_purposes(
+    products: list[dict[str, Any]], declared: Optional[dict[str, str]] = None
+) -> dict[str, str]:
+    """Work out which lines are cross-sells, without asking the buyer.
+
+    Attach rate used to depend entirely on the buyer agent sending a
+    `purposes` map on its order. That is the merchant asking the buyer to
+    self-report the *merchant's* own success metric, and it fails in the one
+    case that matters: a third-party agent has no incentive to send an
+    optional field for someone else's reporting, so a genuine cross-sell was
+    recorded as two primary purchases and the dashboard read 0% attach rate.
+    The bundled Personal Agent does send it, which made the gap invisible in
+    testing — the only orders with a `complement` line were its own.
+
+    The shop does not need to be told. It stocks exactly two categories, and
+    its own campaign rules above already define the relationship between them:
+    a basket with only one category gets a `cross_sell_pair` suggestion to add
+    the other, and a basket with both is what that suggestion was asking for.
+    So a mixed basket *is* a landed cross-sell by this shop's own definition,
+    and the complement is the minority category — the item added alongside,
+    not the one the shopper came for.
+
+    This is a derivation from the basket, not a guess about intent. It cannot
+    know whether the shopper would have bought the T-shirt anyway. What it can
+    say is that this order crossed both categories, which is the thing the
+    bundle campaign rewards and the thing attach rate is measuring.
+
+    Args:
+        products: The basket, one entry per unit (repeats are fine).
+        declared: Purposes the buyer sent, which always win — an agent that
+            took the trouble to say knows more than this does.
+
+    Returns:
+        `{product_id: "complement"}` for the lines derived as cross-sells.
+        Empty when the basket is single-category, i.e. no cross-sell landed.
+        Products named in `declared` are left out, so the caller can apply
+        this as a fallback without overriding the buyer.
+    """
+    declared = declared or {}
+
+    types = {product["id"]: product_type(product) for product in products}
+    if not {"shirt", "tshirt"} <= set(types.values()):
+        # One category only. The shop would be *suggesting* a cross-sell here,
+        # not recording one, so there is nothing to mark.
+        return {}
+
+    counts = Counter(types.values())
+    if counts["shirt"] == counts["tshirt"]:
+        # Evenly split, so count cannot say which was the add-on. The cheaper
+        # item is: the shop's own cross-sell is pitched as something that pairs
+        # with the main purchase, and the Personal Agent's prompt budgets a
+        # complement at roughly half the primary for exactly that reason.
+        cheapest = min(products, key=lambda p: int(p.get("price") or 0))
+        complement_type = product_type(cheapest)
+    else:
+        complement_type = min(counts, key=lambda t: counts[t])
+
+    return {
+        product_id: "complement"
+        for product_id, product_kind in types.items()
+        if product_kind == complement_type and product_id not in declared
+    }
 
 
 def _subtotal(products: list[dict[str, Any]]) -> int:

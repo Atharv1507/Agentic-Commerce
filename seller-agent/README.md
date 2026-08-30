@@ -193,8 +193,15 @@ which of our orders a link settled — no per-order payment link lookup.
 
 | | Recovered | Lost |
 |---|---|---|
-| **full** (`notes.ledger` present) | buyer agent, campaign id, subtotal, discount, every line with size/qty/purpose | the campaign's prose description; `paid_at` |
+| **full** (`notes.ledger` present) | buyer agent, campaign (id, kind, generic description), subtotal, discount, every line with size/qty/purpose and whether that purpose was declared or derived | the campaign's *order-specific* wording ("saves Rs 404 on this Rs 4,048 order"); `paid_at` |
 | **partial** (created before notes) | id, amount, status, created_at, and the product ids in `receipt` — the **first three only** | buyer agent, campaign, discount, sizes, purposes, any 4th+ line |
+
+`campaigns.CAMPAIGN_REGISTRY` is what makes a campaign's `kind` and description
+recoverable from its id alone. `evaluate_campaigns` builds those together with a
+basket's rupee figures, so neither could be reproduced from an id — and the
+merchant's per-campaign breakdown came back with correct totals under a blank
+name. The registry holds only the id-stable parts; the order-specific wording is
+genuinely gone and is not reconstructed.
 
 A partial record reads `buyer_id: "unknown"` and `discount_inr: 0` and is
 flagged `fidelity: "partial"`. Both are deliberate: an understated discount a
@@ -209,6 +216,39 @@ characters per value, written once at creation, and nothing here recovers a fiel
 that was never sent. It turns total data loss into partial data loss for the cost
 of one API field at checkout — but **a persistent volume for `orders.json` is the
 actual fix for durability**, and this does not replace it.
+
+## Attach rate — the merchant measures its own cross-sells
+
+`purpose` on an order line drives the cross-sell attach rate, and it used to
+arrive **only** if the buyer agent sent a `purposes` map on POST /order. That is
+the merchant asking the buyer to self-report the *merchant's* success metric, and
+it failed in the one case that matters: a third-party agent has no reason to send
+an optional field for someone else's reporting, so a genuine cross-sell was
+recorded as two primary purchases and the dashboard read 0%. The bundled Personal
+Agent does send it (`personal-agent/handlers.py`), which is exactly why the gap
+was invisible in testing — the only `complement` lines were its own.
+
+The shop does not need to be told. `campaigns.derive_purposes` reads it off the
+basket: this merchant stocks exactly two categories, and its own campaign rules
+already say a single-category basket gets a `cross_sell_pair` *suggestion* while a
+mixed one is what that suggestion was asking for. So a mixed basket is a landed
+cross-sell by the shop's own definition, and the complement is the minority
+category — on an even split, the cheaper item, since that is how the shop pitches
+a pairing.
+
+The buyer's map always wins where it said anything; derivation only fills the
+silence. Each line records `purpose_source` (`"buyer"` or `"derived"`) so a
+merchant can tell which the number is built from, and that survives a rebuild.
+
+The manifest now asks for `purposes` in prose rather than only inside the
+generated request schema, and says the merchant copes without it.
+
+> **Pre-existing bug this uncovered:** `rag.get_product_by_id` did not return
+> `tags`, and `campaigns.product_type` classifies shirt vs T-shirt off `tags` —
+> so **every product classified as `shirt`**. That made `{"shirt", "tshirt"} <=
+> types` unsatisfiable, so the shirt + T-shirt bundle campaign could never fire
+> at all, and every T-shirt line in the ledger was stamped `type: "shirt"`. Fixed
+> by carrying `tags` through; the bundle now applies.
 
 ## Campaigns
 

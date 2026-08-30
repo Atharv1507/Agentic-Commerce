@@ -6,7 +6,7 @@ from typing import Any, Optional
 import razorpay
 from dotenv import load_dotenv
 
-from campaigns import evaluate_campaigns, price_basket, product_type
+from campaigns import derive_purposes, evaluate_campaigns, price_basket, product_type
 from rag import available_sizes, search_catalog, get_product_by_id, price_range
 from vocab import SIZES, canonical_size
 
@@ -252,7 +252,8 @@ _LINE_SEP = "|"
 def _pack_lines(lines: list[dict[str, Any]]) -> list[str]:
     """Pack order lines into `notes`-sized strings.
 
-    Each line becomes `id:size:qty:purpose:price`. Only the product **id**
+    Each line becomes `id:size:qty:purpose:price:purpose_source`. Only the
+    product **id**
     needs to survive round-tripping: name, brand, colour and image all come
     back out of `catalog.json` on the id alone. Size, quantity and purpose do
     not — they are facts about this order, not about the product — and price
@@ -278,6 +279,7 @@ def _pack_lines(lines: list[dict[str, Any]]) -> list[str]:
                 line.get("quantity") or 1,
                 line.get("purpose") or "primary",
                 line.get("price") or "",
+                line.get("purpose_source") or "",
             )
         )
         candidate = f"{current}{_LINE_SEP}{encoded}" if current else encoded
@@ -488,6 +490,13 @@ def create_order(
     pricing = price_basket(products, buyer_context)
     total_amount = pricing["total_inr"]
 
+    # Which lines are cross-sells, worked out from the basket rather than taken
+    # on trust. The buyer's own `purposes` still wins where it said anything —
+    # this only fills the silence, which for any third-party agent is all of
+    # it. See `campaigns.derive_purposes` for why the shop can answer this
+    # itself.
+    derived_purposes = derive_purposes(products, purposes)
+
     # One entry per unit ordered, collapsed to one line per (product, size) so
     # a ledger reader sees "2 x M" rather than the same row twice.
     lines: list[dict[str, Any]] = []
@@ -506,7 +515,11 @@ def create_order(
             "size": ordered_sizes.get(pid),
             "quantity": 1,
             "type": product_type(product),
-            "purpose": purposes.get(pid, "primary"),
+            "purpose": purposes.get(pid) or derived_purposes.get(pid) or "primary",
+            # Whether the buyer told us or the shop worked it out. Attach rate
+            # reads the same either way, but a merchant looking at the number
+            # should be able to tell which of those it is built from.
+            "purpose_source": "buyer" if pid in purposes else "derived",
         }
         line_index[key] = line
         lines.append(line)
