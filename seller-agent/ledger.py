@@ -190,6 +190,30 @@ def mark_paid(
     return record
 
 
+def get_order(order_id: str) -> Optional[dict[str, Any]]:
+    """One order by id, or None if this shop never recorded it.
+
+    Exists so a settlement path can ask "is this an order of MINE?" before
+    acting on an id that arrived from outside. A Razorpay webhook for a
+    payment link carries the internal order Razorpay minted for the link as
+    well as our own `reference_id`, and only one of those is in this ledger —
+    marking the wrong one paid would leave the real sale showing unpaid.
+
+    Returns a copy, so a caller inspecting an order can't mutate the ledger.
+    """
+    record = _orders.get(order_id)
+    return dict(record) if record else None
+
+
+def pending_orders() -> list[dict[str, Any]]:
+    """Orders recorded but not yet settled, newest first.
+
+    The reconciliation pass's work list. Kept here rather than derived by the
+    caller so "what counts as unsettled" has exactly one definition.
+    """
+    return [record for record in all_orders() if record.get("status") != "paid"]
+
+
 def all_orders() -> list[dict[str, Any]]:
     """Every order the shop has recorded, newest first.
 

@@ -119,6 +119,47 @@ to read how to get a key before it has one.
    `reference_id` (our order id) and always reports the id *this* ledger knows,
    never Razorpay's internal one. Settling against the wrong id would mark an
    unknown order paid and leave the real one showing unpaid revenue.
+10. **The shop finds out it was paid without the buyer's help** (`settlement.py`).
+    A buyer agent typically hands the `payment_url` to its user and finishes;
+    the user pays minutes or hours later in a browser that agent never sees. If
+    settlement depended on the buyer calling `/payment/verify`, that sale would
+    be captured by Razorpay and reported unpaid by this shop indefinitely, and
+    no wording in the manifest could fix it — the process that read the
+    instruction is gone. So there are two paths that don't involve the buyer:
+    a **Razorpay webhook** (`POST /razorpay/webhook`, HMAC-authenticated), which
+    settles promptly with nobody watching, and **reconciliation on read**, which
+    re-verifies unpaid orders before the merchant's analytics are totalled and
+    needs no public URL. Both refuse to write to an order id this ledger does
+    not already contain, for the reason in step 9.
+
+## Settlement
+
+`POST /razorpay/webhook` is how a payment link settles on its own. Configure it
+once, in the Razorpay dashboard under **Settings -> Webhooks**:
+
+| | |
+|---|---|
+| URL | `<your_public_url>/razorpay/webhook` |
+| Events | `payment_link.paid`, `order.paid`, `payment.captured` |
+| Secret | any string; put the same value in `RAZORPAY_WEBHOOK_SECRET` |
+
+The signature is the route's only credential — it is not behind a buyer or
+merchant key, because Razorpay holds neither. So an unset `RAZORPAY_WEBHOOK_SECRET`
+makes the route reject every delivery rather than fall back to a demo value the
+way the API keys do: an endpoint that books revenue must not accept
+unauthenticated callers. The service warns on boot while the secret is missing.
+
+A delivery about an order this shop doesn't own answers `200` with
+`handled: false`. That is not an error — the Razorpay account may have other
+integrations — and a non-2xx would only earn a retry of something that can
+never succeed. Only a failed signature is a `4xx`.
+
+Reconciliation is the backstop, and covers what a webhook cannot: a deployment
+with no public URL, a webhook added after orders were already paid, and dropped
+deliveries. `GET /merchant/analytics` runs it before aggregating and reports what
+it did under `reconciled`. It is read-only against Razorpay, skips orders whose
+payment link has expired, and rate-limits itself, so a dashboard open costs at
+most a couple of API calls.
 
 ## Campaigns
 
@@ -149,6 +190,7 @@ the merchant margin, never overcharge a shopper.
 | POST | `/stock` | buyer | Non-LLM: exact per-size stock for a list of product IDs |
 | POST | `/order` | buyer | Non-LLM: price, validate stock, create the Razorpay order + `payment_url`, record it |
 | POST | `/payment/verify` | buyer | Non-LLM: confirm payment on either rail (browser checkout or payment link), settle the ledger |
+| POST | `/razorpay/webhook` | **HMAC signature** | Razorpay reports a capture; settles the ledger with no buyer agent in the loop |
 | GET | `/merchant/analytics` | **merchant** | Revenue, AOV, revenue per buyer agent, attach rate, campaign impact |
 | GET | `/health` | none | Liveness, active session count, and whether demo keys are in use |
 

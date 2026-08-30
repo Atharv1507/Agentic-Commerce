@@ -107,6 +107,34 @@ MERCHANT_CATEGORIES = ["shirts", "t-shirts"]
 MERCHANT_PRICE_RANGE_INR = {"min": 300, "max": 9000}
 MERCHANT_CURRENCY = "INR"
 
+# Shared secret Razorpay signs webhook deliveries with, set in the Razorpay
+# dashboard when you create the webhook. Without it this deployment cannot
+# accept webhooks at all — and it must not fall back to a demo value the way
+# the buyer keys do. A published signing secret is not a weaker credential,
+# it is no credential: anyone could POST "this order is paid" and book revenue
+# the shop was never given. So an unset secret means the webhook route rejects
+# everything, and settlement falls back to reconciliation on read.
+RAZORPAY_WEBHOOK_SECRET = os.getenv("RAZORPAY_WEBHOOK_SECRET", "").strip() or None
+
+if not RAZORPAY_WEBHOOK_SECRET:
+    logging.warning(
+        "RAZORPAY_WEBHOOK_SECRET not set — POST /razorpay/webhook will reject every "
+        "delivery. Orders paid on a payment link will only settle when the merchant "
+        "dashboard is opened (reconciliation on read), or when a buyer agent calls "
+        "POST /payment/verify. Set it to close that gap."
+    )
+
+# How long after creation an unpaid order is still worth re-checking against
+# Razorpay during reconciliation. Matches the payment link's own TTL in
+# `handlers.PAYMENT_LINK_TTL_SECONDS`: past that the link has expired, so a
+# `created` order can no longer become paid and polling it is pure cost.
+RECONCILE_MAX_AGE_SECONDS = 24 * 60 * 60
+
+# Floor between reconciliation passes, so several dashboard mounts in a row
+# cost one round of Razorpay calls rather than one per mount.
+RECONCILE_COOLDOWN_SECONDS = 30
+
+
 # Browser origins allowed to call this service directly. Server-to-server
 # agent traffic doesn't need CORS at all — this exists solely for the
 # merchant analytics dashboard in the React app, which is the one browser

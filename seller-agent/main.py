@@ -4,7 +4,7 @@ import os
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
-from fastapi import Depends, FastAPI, Response
+from fastapi import Depends, FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
 from openai import OpenAI
 from dotenv import load_dotenv
@@ -39,6 +39,7 @@ from schemas import (
 )
 from handlers import check_stock, create_order, execute_tool, verify_payment
 import ledger
+from settlement import WebhookRejected, reconcile_pending, settle_from_webhook
 from rag import catalog_facets
 
 logging.basicConfig(level=logging.INFO)
@@ -485,6 +486,47 @@ async def verify_payment_route(
     return result
 
 
+@app.post("/razorpay/webhook")
+async def razorpay_webhook(request: Request, response: Response) -> dict[str, Any]:
+    """Razorpay tells the shop it was paid, directly.
+
+    The one settlement path that does not depend on the buyer agent still
+    being alive. A buyer agent hands its user a `payment_url` and its turn
+    ends; the user pays later, in a browser the agent never sees. Without
+    this route the sale is captured by Razorpay and the merchant's dashboard
+    reports it unpaid forever — see `settlement` for the full account.
+
+    Deliberately NOT behind `require_buyer` or `require_merchant`: the caller
+    is Razorpay, which holds neither key. Its HMAC signature over the raw body
+    is the credential, and `settlement._verify_signature` fails closed when
+    this deployment has no `RAZORPAY_WEBHOOK_SECRET` — an endpoint that books
+    revenue must not be open.
+
+    Subscribe `payment_link.paid`, `order.paid` and `payment.captured` in the
+    Razorpay dashboard and point them at `<base_url>/razorpay/webhook`.
+
+    Returns:
+        What was settled, if anything. A genuine delivery about an order this
+        shop doesn't own returns 200 with `handled: false` — it is not an
+        error, and a non-2xx would only buy a retry of something that can
+        never succeed. Only a delivery that fails authentication is a 4xx.
+    """
+    # The signature is over the exact bytes sent, so the body has to be read
+    # raw. Letting FastAPI parse it into a model first would leave only
+    # re-serialised JSON, whose key order and spacing would never match.
+    raw_body = await request.body()
+    signature = request.headers.get("X-Razorpay-Signature")
+
+    try:
+        return {"status": "ok", **settle_from_webhook(raw_body, signature)}
+    except WebhookRejected as e:
+        # 400, not 401: nothing here is retryable and Razorpay's dashboard
+        # surfaces the response, which is where this needs to be readable.
+        logger.warning(f"Webhook rejected: {e}")
+        response.status_code = 400
+        return {"status": "error", "error": "webhook_rejected", "message": str(e)}
+
+
 @app.get("/merchant/analytics")
 async def merchant_analytics_route(
     _: str = Depends(require_merchant),
@@ -494,8 +536,23 @@ async def merchant_analytics_route(
     Behind the merchant credential, not a buyer key — revenue split by buyer
     agent is precisely the thing one buyer agent must not be able to read
     about another.
+
+    Reconciles first. `merchant_analytics` counts only orders the ledger says
+    are paid, so an order settled by neither the webhook nor a buyer agent's
+    verify call would be reported as unpaid revenue on the one screen whose
+    entire job is to be right about revenue. The pass is read-only against
+    Razorpay, rate-limited, and skips orders whose payment link has expired,
+    so the cost is at most a couple of API calls per dashboard open.
     """
-    return {"status": "ok", **merchant_analytics()}
+    reconciled = reconcile_pending()
+    return {
+        "status": "ok",
+        **merchant_analytics(),
+        # Surfaced so "the number changed when I opened this" is explainable
+        # rather than spooky, and so a settlement arriving this way instead of
+        # by webhook is visible.
+        "reconciled": reconciled,
+    }
 
 
 @app.get("/.well-known/agent.json")
@@ -597,7 +654,10 @@ async def agent_card() -> dict[str, Any]:
                 "summary": (
                     "Confirm a completed payment against Razorpay's own record. Checks "
                     "both rails — browser checkout and payment link — so a link you paid "
-                    "is reported as paid."
+                    "is reported as paid. Useful when you want the answer; not something "
+                    "the merchant depends on. The shop is told by Razorpay directly, so "
+                    "you may hand a payment_url to your user and end your turn without "
+                    "the sale going unrecorded."
                 ),
             },
         ],
