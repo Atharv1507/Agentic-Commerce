@@ -214,6 +214,41 @@ def pending_orders() -> list[dict[str, Any]]:
     return [record for record in all_orders() if record.get("status") != "paid"]
 
 
+def upsert_rehydrated(record: dict[str, Any]) -> bool:
+    """Insert an order rebuilt from Razorpay, without touching one we still hold.
+
+    Insert-only on purpose. A record reconstructed from Razorpay is strictly
+    poorer than the one written at checkout — Razorpay's `notes` are size-
+    capped, so a long basket may have lost lines, and an order created before
+    the notes existed has no buyer attribution at all. Letting a rebuild
+    overwrite a live record would therefore *downgrade* the ledger, which is
+    the opposite of the point.
+
+    Args:
+        record: A full order record, already shaped like `record_order`'s.
+
+    Returns:
+        True if it was added, False if this order was already known.
+    """
+    order_id = record.get("order_id")
+    if not order_id or order_id in _orders:
+        return False
+
+    _orders[order_id] = record
+    _flush()
+    return True
+
+
+def is_empty() -> bool:
+    """Whether this shop has no recorded orders at all.
+
+    The signal that a rebuild is worth running unprompted: an empty ledger on
+    a merchant whose Razorpay account has history means the file was lost, not
+    that nothing ever sold.
+    """
+    return not _orders
+
+
 def all_orders() -> list[dict[str, Any]]:
     """Every order the shop has recorded, newest first.
 

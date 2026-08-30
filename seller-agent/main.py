@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+from contextlib import asynccontextmanager
 from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
@@ -40,6 +41,7 @@ from schemas import (
 from handlers import check_stock, create_order, execute_tool, verify_payment
 import ledger
 from settlement import WebhookRejected, reconcile_pending, settle_from_webhook
+from rehydrate import rebuild_from_razorpay, rebuild_if_empty
 from rag import catalog_facets
 
 logging.basicConfig(level=logging.INFO)
@@ -47,7 +49,31 @@ logger = logging.getLogger(__name__)
 
 load_dotenv()
 
-app = FastAPI(title="Seller Agent")
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Rebuild the ledger from Razorpay before serving, if it is missing.
+
+    `orders.json` lives on local disk and is gitignored, so on a host with an
+    ephemeral filesystem every redeploy destroys the merchant's whole sales
+    history and the dashboard comes back reporting zero revenue on an account
+    that has sold plenty. Razorpay still has every order, so that loss is
+    recoverable — see `rehydrate`.
+
+    Only runs when the ledger is genuinely empty, and never overwrites a
+    record the shop still holds, so a normal restart with intact data costs
+    nothing. Failure is logged and startup continues: a shop that cannot
+    reach Razorpay for its history should still be able to sell.
+    """
+    result = rebuild_if_empty()
+    if result.get("added"):
+        logger.info(
+            f"Startup: rebuilt {len(result['added'])} order(s) from Razorpay "
+            f"({result['fidelity']['full']} full, {result['fidelity']['partial']} partial)"
+        )
+    yield
+
+
+app = FastAPI(title="Seller Agent", lifespan=lifespan)
 
 # Agent-to-agent traffic is server-to-server and needs no CORS at all. This
 # exists for exactly one caller: the merchant analytics dashboard in the React
@@ -180,7 +206,10 @@ def render_brief(brief: SearchBrief) -> str:
 
 
 def _run_conversation(
-    session_id: str, text: str, buyer_context: Optional[dict[str, Any]] = None
+    session_id: str,
+    text: str,
+    buyer_context: Optional[dict[str, Any]] = None,
+    buyer_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Run one brief through the tool-calling loop and return the reply.
 
@@ -191,6 +220,10 @@ def _run_conversation(
             is the point.
         buyer_context: Passed through to tools out-of-band, never exposed as a
             tool argument the model could fabricate.
+        buyer_id: The authenticated caller, passed to tools the same way and
+            for the same reason. `create_order` records it into the order's
+            Razorpay notes, so an order placed through this conversational
+            route is attributed as durably as one placed on POST /order.
 
     Returns:
         Dict with `response` and `tool_results`.
@@ -247,7 +280,10 @@ def _run_conversation(
             results = list(
                 _tool_executor.map(
                     lambda pair: execute_tool(
-                        pair[0].function.name, pair[1], buyer_context=buyer_context
+                        pair[0].function.name,
+                        pair[1],
+                        buyer_context=buyer_context,
+                        buyer_id=buyer_id,
                     ),
                     zip(calls, arg_list),
                 )
@@ -334,6 +370,7 @@ async def handle_message(
         scoped_session_id(buyer_id, request.session_id),
         brief_text,
         buyer_context=request.buyer_context.model_dump() if request.buyer_context else None,
+        buyer_id=buyer_id,
     )
 
 
@@ -428,6 +465,7 @@ async def create_order_route(
         buyer_size=request.buyer_size,
         purposes=request.purposes,
         buyer_context=request.buyer_context.model_dump() if request.buyer_context else None,
+        buyer_id=buyer_id,
     )
 
     response.status_code = _error_status(result)
@@ -525,6 +563,30 @@ async def razorpay_webhook(request: Request, response: Response) -> dict[str, An
         logger.warning(f"Webhook rejected: {e}")
         response.status_code = 400
         return {"status": "error", "error": "webhook_rejected", "message": str(e)}
+
+
+@app.post("/merchant/rehydrate")
+async def merchant_rehydrate_route(
+    dry_run: bool = False,
+    _: str = Depends(require_merchant),
+) -> dict[str, Any]:
+    """Rebuild the ledger from the Razorpay account, on demand.
+
+    The same pass that runs at startup on an empty ledger, exposed so a
+    merchant can trigger it after a redeploy without restarting, and so the
+    result is inspectable. Behind the merchant credential: it reads the whole
+    account's order history, including which buyer agent placed what.
+
+    Insert-only — an order the ledger already holds is never modified, because
+    the record written at checkout is always richer than a reconstruction.
+
+    Args:
+        dry_run: Report what would be added without writing.
+
+    Returns:
+        Which orders were added, at what fidelity, and what was skipped.
+    """
+    return {"status": "ok", **rebuild_from_razorpay(dry_run=dry_run)}
 
 
 @app.get("/merchant/analytics")

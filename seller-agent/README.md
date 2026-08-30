@@ -161,6 +161,55 @@ it did under `reconciled`. It is read-only against Razorpay, skips orders whose
 payment link has expired, and rate-limits itself, so a dashboard open costs at
 most a couple of API calls.
 
+## Durability — Razorpay as the ledger's backup
+
+`orders.json` is a file on local disk and is gitignored, so on a host with an
+ephemeral filesystem (Railway, Fly, a plain container) **every redeploy destroys
+the merchant's entire sales history** and the dashboard comes back reporting zero
+revenue on an account that has sold plenty.
+
+Razorpay has not lost any of it. So the ledger is no longer the only copy:
+
+- **On the write side**, `handlers.build_order_notes` puts the merchant's own
+  view of each order into Razorpay's `notes` at creation — buyer agent, campaign
+  id, subtotal, discount, and the lines packed as `id:size:qty:purpose:price`.
+  None of those are payments concepts, so `notes` is the only place Razorpay will
+  hold them. Only the product **id** has to survive: name, brand, colour and
+  image come back out of `catalog.json`.
+- **On the read side**, `rehydrate.rebuild_from_razorpay` walks
+  `order.all()` and reconstructs anything the ledger is missing. It runs
+  automatically at startup when the ledger is empty (`rebuild_if_empty` — an
+  empty ledger on an account with history means the file was lost, not that
+  nothing sold), and on demand via `POST /merchant/rehydrate`.
+
+Insert-only, always: a record written at checkout is richer than a
+reconstruction, so a rebuild never overwrites one the shop still holds.
+
+Paid-ness survives too, including for payment links. A link's internal order
+carries `notes.order_id` pointing back at ours, so one listing call recovers
+which of our orders a link settled — no per-order payment link lookup.
+
+### Two fidelities, reported not smoothed over
+
+| | Recovered | Lost |
+|---|---|---|
+| **full** (`notes.ledger` present) | buyer agent, campaign id, subtotal, discount, every line with size/qty/purpose | the campaign's prose description; `paid_at` |
+| **partial** (created before notes) | id, amount, status, created_at, and the product ids in `receipt` — the **first three only** | buyer agent, campaign, discount, sizes, purposes, any 4th+ line |
+
+A partial record reads `buyer_id: "unknown"` and `discount_inr: 0` and is
+flagged `fidelity: "partial"`. Both are deliberate: an understated discount a
+reader is told about beats an invented one they aren't, and attributing a sale
+to whichever buyer agent seems likely would corrupt the one metric the dashboard
+exists for.
+
+### What this is not
+
+A backup, not a second system of record. `notes` are capped at 15 keys and 256
+characters per value, written once at creation, and nothing here recovers a field
+that was never sent. It turns total data loss into partial data loss for the cost
+of one API field at checkout — but **a persistent volume for `orders.json` is the
+actual fix for durability**, and this does not replace it.
+
 ## Campaigns
 
 Four kinds, in `campaigns.py`: a spend **threshold discount**, a shirt +
@@ -191,6 +240,7 @@ the merchant margin, never overcharge a shopper.
 | POST | `/order` | buyer | Non-LLM: price, validate stock, create the Razorpay order + `payment_url`, record it |
 | POST | `/payment/verify` | buyer | Non-LLM: confirm payment on either rail (browser checkout or payment link), settle the ledger |
 | POST | `/razorpay/webhook` | **HMAC signature** | Razorpay reports a capture; settles the ledger with no buyer agent in the loop |
+| POST | `/merchant/rehydrate` | **merchant** | Rebuild the ledger from the Razorpay account after a redeploy wiped it (`?dry_run=true` to preview) |
 | GET | `/merchant/analytics` | **merchant** | Revenue, AOV, revenue per buyer agent, attach rate, campaign impact |
 | GET | `/health` | none | Liveness, active session count, and whether demo keys are in use |
 
@@ -246,4 +296,7 @@ which is a browser. All buyer traffic is server-to-server and needs none.
   checks the same static count N times rather than as an aggregate. The real
   protection is the buyer's `/stock` pre-check before `/order`.
 - `buyer_context` is self-reported and unverified (see Campaigns above).
+- **`orders.json` is on local disk.** A rebuild from Razorpay (see Durability)
+  recovers it after a redeploy, but at reduced fidelity for orders created
+  before `notes` were written. A persistent volume is the real fix.
 - Static keys, no rotation, no rate limiting — a hackathon build.

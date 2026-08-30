@@ -233,6 +233,126 @@ def evaluate_offers(
     }
 
 
+# Razorpay's `notes` limits: 15 key-value pairs, 256 characters per value.
+# Everything the merchant knows about an order that Razorpay does not has to
+# fit inside them, so lines are packed rather than stored one key each.
+NOTES_MAX_KEYS = 15
+NOTES_MAX_VALUE_CHARS = 256
+
+# Bumped if the packing below ever changes shape, so a reader can tell which
+# format it is looking at instead of guessing from the fields present.
+LEDGER_NOTES_VERSION = "v1"
+
+# Field separator inside a packed line, and between lines. Neither can appear
+# in a product id, size, purpose or integer, so no escaping is needed.
+_LINE_FIELD_SEP = ":"
+_LINE_SEP = "|"
+
+
+def _pack_lines(lines: list[dict[str, Any]]) -> list[str]:
+    """Pack order lines into `notes`-sized strings.
+
+    Each line becomes `id:size:qty:purpose:price`. Only the product **id**
+    needs to survive round-tripping: name, brand, colour and image all come
+    back out of `catalog.json` on the id alone. Size, quantity and purpose do
+    not — they are facts about this order, not about the product — and price
+    is carried because the catalogue's price today is not necessarily the
+    price this order was struck at.
+
+    Lines are concatenated into as few values as will hold them, because the
+    budget is 15 keys total and one key per line would cap an order at a
+    dozen items for no reason.
+
+    Returns:
+        A list of packed strings, each within Razorpay's per-value limit.
+    """
+    packed: list[str] = []
+    current = ""
+
+    for line in lines:
+        encoded = _LINE_FIELD_SEP.join(
+            str(field)
+            for field in (
+                line.get("id") or "",
+                line.get("size") or "",
+                line.get("quantity") or 1,
+                line.get("purpose") or "primary",
+                line.get("price") or "",
+            )
+        )
+        candidate = f"{current}{_LINE_SEP}{encoded}" if current else encoded
+        if len(candidate) > NOTES_MAX_VALUE_CHARS:
+            if current:
+                packed.append(current)
+            # A single line longer than the limit would loop forever appended
+            # to an empty accumulator, so it is truncated and kept: a lossy
+            # line still names its product id, which is the part that matters.
+            current = encoded[:NOTES_MAX_VALUE_CHARS]
+        else:
+            current = candidate
+
+    if current:
+        packed.append(current)
+    return packed
+
+
+def build_order_notes(
+    buyer_id: Optional[str],
+    pricing: dict[str, Any],
+    lines: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Write the merchant's own view of an order into Razorpay's `notes`.
+
+    Why bother, when `orders.json` already holds all of this: because
+    `orders.json` is a file on the container's disk, and a redeploy of a
+    host with ephemeral storage takes the shop's entire sales history with
+    it. Razorpay, meanwhile, has kept every order ever created and will not
+    lose them.
+
+    What Razorpay stores on its own is enough to rebuild *revenue* — id,
+    amount, status, created_at — but not the dimensions that make the
+    merchant dashboard worth looking at: which buyer agent brought the sale,
+    which campaign applied, and what was in the basket. None of that is a
+    payments concept, so Razorpay has nowhere to put it except `notes`.
+    Filling them in costs nothing at order time and turns Razorpay into a
+    durable backup of the ledger — see `rehydrate.py`, which reads them back.
+
+    This is a backup, not the system of record. `notes` are size-capped and
+    write-once-per-order, so the ledger stays authoritative; this is what the
+    shop falls back to when the ledger is gone.
+
+    Returns:
+        A flat dict of strings, within Razorpay's key and value limits.
+        Values are strings because that is what the API accepts.
+    """
+    campaign = pricing.get("applied_campaign") or {}
+    notes = {
+        "ledger": LEDGER_NOTES_VERSION,
+        # Recorded as "unknown" rather than omitted: a rebuilt ledger needs to
+        # say "this sale's channel was not captured", which is a different
+        # claim from attributing it to whichever buyer happens to be first.
+        "buyer_id": str(buyer_id or "unknown"),
+        "subtotal_inr": str(pricing.get("subtotal_inr") or ""),
+        "discount_inr": str(pricing.get("discount_inr") or 0),
+        "campaign_id": str(campaign.get("id") or ""),
+    }
+
+    for index, chunk in enumerate(_pack_lines(lines)):
+        if len(notes) >= NOTES_MAX_KEYS:
+            # Out of room. The lines that did fit are still worth having, and
+            # the count says so explicitly so a rebuilt order is never
+            # mistaken for a complete one.
+            logger.warning(
+                f"Order notes hit the {NOTES_MAX_KEYS}-key limit; "
+                f"{len(lines)} line(s) did not all fit"
+            )
+            break
+        notes[f"lines_{index}"] = chunk
+
+    notes["line_count"] = str(len(lines))
+    return notes
+
+
 def create_order(
     product_ids: list[str],
     buyer_name: str,
@@ -243,6 +363,7 @@ def create_order(
     buyer_size: Optional[str] = None,
     purposes: Optional[dict[str, str]] = None,
     buyer_context: Optional[dict[str, Any]] = None,
+    buyer_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Create a Razorpay order for multiple products, in the buyer's sizes.
 
@@ -270,6 +391,11 @@ def create_order(
             treated as primary.
         buyer_context: Self-reported shopper history, used only to test
             lifecycle campaign conditions.
+        buyer_id: Which authenticated buyer agent is placing this, resolved
+            from the API key by the route. Passed out-of-band for the same
+            reason as `buyer_context` — it is a fact about the caller, not a
+            decision the model may make — and recorded into Razorpay's `notes`
+            so revenue attribution survives the loss of the local ledger.
 
     Returns:
         Dict with order details, or an error naming the product and the sizes
@@ -391,6 +517,10 @@ def create_order(
                 "amount": total_amount * 100,
                 "currency": "INR",
                 "receipt": f"receipt_{'_'.join(product_ids[:3])}",
+                # Razorpay as a durable backup of the merchant's own ledger.
+                # See `build_order_notes` for why, and `rehydrate.py` for the
+                # read side.
+                "notes": build_order_notes(buyer_id, pricing, lines),
             }
         )
 
@@ -629,6 +759,7 @@ def execute_tool(
     tool_name: str,
     arguments: dict[str, Any],
     buyer_context: Optional[dict[str, Any]] = None,
+    buyer_id: Optional[str] = None,
 ) -> dict[str, Any]:
     """Execute a tool by name with given arguments.
 
@@ -640,6 +771,8 @@ def execute_tool(
             purpose — it is a fact about the caller, not a decision the model
             gets to make, so the model must not be able to invent or inflate
             it to unlock a better lifecycle offer.
+        buyer_id: The authenticated caller, out-of-band for the same reason —
+            a model that could name the buyer could misattribute revenue.
 
     Returns:
         Tool execution result.
@@ -726,6 +859,7 @@ def execute_tool(
             buyer_size=arguments.get("buyer_size"),
             purposes=arguments.get("purposes"),
             buyer_context=buyer_context,
+            buyer_id=buyer_id,
         )
 
     logger.error(f"Unknown tool: {tool_name}")
