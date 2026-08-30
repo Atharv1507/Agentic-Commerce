@@ -720,6 +720,33 @@ async def stock(
     }
 
 
+@app.get("/")
+async def root() -> dict[str, Any]:
+    """Point a caller that arrived with only the base URL at the manifest.
+
+    `/.well-known/agent.json` is the RFC 8615 convention and an agent that
+    knows to probe it needs nothing here. Plenty of them do not — they are
+    handed a bare base URL — and a 404 at the root reads as "this host is
+    dead" rather than "look one path over". So the root answers, and it
+    answers with the manifest inlined under `agent_card` rather than only a
+    link: a buyer agent that landed here is then done discovering in one
+    request instead of two, and cannot mis-join the path.
+    """
+    return {
+        "name": MERCHANT_NAME,
+        "type": "seller_agent",
+        "description": MERCHANT_DESCRIPTION,
+        "manifest_url": "/.well-known/agent.json",
+        "message": (
+            "This is a merchant's selling agent, for AI buyer agents rather than "
+            "browsers. Everything you need to search, negotiate, order and pay is "
+            "in the manifest below (also served at /.well-known/agent.json), "
+            "including a demo key you can authenticate with immediately."
+        ),
+        "agent_card": await agent_card(),
+    }
+
+
 @app.get("/health")
 async def health() -> dict[str, Any]:
     """Health check endpoint.

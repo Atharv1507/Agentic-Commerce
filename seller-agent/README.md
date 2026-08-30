@@ -61,13 +61,16 @@ starts healthy, then 401s every search with no visible cause, which reads as a
 broken build rather than a skipped config step. Since the demo keys are already
 public in the repo, defaulting to them gives away nothing.
 
-`/health` and `/.well-known/agent.json` are deliberately open: a buyer needs to
-read how to get a key before it has one.
+`/`, `/health` and `/.well-known/agent.json` are deliberately open: a buyer needs
+to read how to get a key before it has one.
 
 ## Flow
 
 1. A buyer agent GETs `/.well-known/agent.json` to learn what this merchant
-   sells, what it can do, and how to authenticate.
+   sells, what it can do, and how to authenticate. An agent that was handed
+   only the base URL and does not know the well-known convention gets the
+   same manifest from `GET /`, inlined — a 404 at the root reads as a dead
+   host rather than a wrong path.
 2. It posts a brief to `/message` — either a structured `brief` (schema
    published in the manifest) or free-form `text`, or both. A structured brief
    is rendered server-side into this shop's canonical instruction and then runs
@@ -138,6 +141,7 @@ the merchant margin, never overcharge a shopper.
 
 | Method | Path | Auth | Purpose |
 |---|---|---|---|
+| GET | `/` | none | Pointer for a caller that only has the base URL, with the manifest inlined |
 | GET | `/.well-known/agent.json` | none | Self-describing manifest: capabilities first, then callable schemas |
 | POST | `/message` | buyer | Run one brief (structured, prose, or both) through the tool-calling loop |
 | DELETE | `/session/{session_id}` | buyer | Drop one negotiation's context (only ever the caller's own) |
