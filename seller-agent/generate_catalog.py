@@ -1,7 +1,7 @@
 """Generate the demo catalogue: 300 shirts and T-shirts.
 
 `catalog.json` is the source of truth for the whole system — it is what gets
-embedded into ChromaDB at startup and what every search scores against. This
+embedded (OpenAI embeddings, cached in catalog_embeddings.json) at startup and what every search scores against. This
 script is how that file is produced, so the catalogue's composition is a
 deliberate, reviewable thing rather than whatever a scrape happened to contain.
 
@@ -564,7 +564,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     with open(args.output, "w") as handle:
         json.dump(products, handle, indent=1)
     logger.info(f"Wrote {len(products)} products to {args.output}")
-    logger.info("Restart the Seller Agent to re-index ChromaDB.")
+    logger.info("Restart the Seller Agent to re-embed changed products.")
     return 0
 
 

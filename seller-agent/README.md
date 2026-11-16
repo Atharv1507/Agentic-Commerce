@@ -17,8 +17,10 @@ what's relevant rather than handing over its inventory.
   by default, `SELLER_AGENT_PORT` to override)
 - **OpenAI** (`gpt-5-mini` by default) — maps a brief onto `search_catalog`
   arguments (price band, colours, brands, size, exclusions)
-- **ChromaDB** (`chromadb.Client()`, in-memory, no persistence) — vector store
-  for the product catalogue, loaded once at startup from `catalog.json`
+- **OpenAI embeddings** (`text-embedding-3-small`, 512 dims) + numpy cosine
+  search over the catalogue. Product vectors are cached in
+  `catalog_embeddings.json`; only products whose text changed are re-embedded
+  at startup. No local model, so it fits a 512 MB free-tier instance.
 - **razorpay** SDK — order creation and payment verification. This service is
   the only party that touches Razorpay; buyer agents never hold merchant
   payment credentials
@@ -316,7 +318,7 @@ Any AI buyer agent
         ▼
 Seller Agent  ── OpenAI Chat Completions API  (tool-calling loop)
         │
-        ├── ChromaDB (in-memory, loaded from catalog.json)
+        ├── OpenAI embeddings (cached in catalog_embeddings.json)
         ├── campaigns.py  (deterministic pricing policy)
         ├── ledger.py → orders.json  (durable, per-buyer attribution)
         └── razorpay SDK → Razorpay API  (order.create, payment_link.create,

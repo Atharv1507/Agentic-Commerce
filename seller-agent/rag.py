@@ -1,10 +1,14 @@
+import hashlib
 import json
 import logging
+import os
 import re
 from typing import Any, Optional
 
-import chromadb
+import numpy as np
+from openai import OpenAI
 
+import config  # noqa: F401 — loads .env before the OpenAI key is read
 from vocab import (
     GARMENT_TOKENS,
     MATERIAL_TOKENS,
@@ -19,8 +23,47 @@ from vocab import (
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-client = chromadb.Client()
-collection = client.get_or_create_collection(name="products")
+# Embeddings come from the OpenAI API rather than a local model: Chroma's
+# bundled ONNX MiniLM needs ~80 MB on disk and a few hundred MB of RAM, which
+# alone overflows a 512 MB free-tier instance. Product vectors are cached in
+# EMBEDDINGS_FILE (committed), so a boot normally makes no API call at all;
+# only products whose searchable text changed get re-embedded.
+EMBEDDING_MODEL = os.getenv("EMBEDDING_MODEL", "text-embedding-3-small")
+EMBEDDING_DIMS = 512
+EMBEDDINGS_FILE = "catalog_embeddings.json"
+
+_openai: Optional[OpenAI] = None
+
+
+def _client() -> OpenAI:
+    global _openai
+    if _openai is None:
+        _openai = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+    return _openai
+
+
+def _embed(texts: list[str]) -> np.ndarray:
+    """Embed texts and L2-normalise, so a dot product is cosine similarity."""
+    vectors: list[list[float]] = []
+    for start in range(0, len(texts), 256):
+        resp = _client().embeddings.create(
+            model=EMBEDDING_MODEL,
+            input=texts[start : start + 256],
+            dimensions=EMBEDDING_DIMS,
+        )
+        vectors.extend(item.embedding for item in resp.data)
+    matrix = np.asarray(vectors, dtype=np.float32)
+    norms = np.linalg.norm(matrix, axis=1, keepdims=True)
+    return matrix / np.where(norms == 0, 1.0, norms)
+
+
+def _text_hash(text: str) -> str:
+    return hashlib.sha256(f"{EMBEDDING_MODEL}:{EMBEDDING_DIMS}:{text}".encode()).hexdigest()[:16]
+
+
+# Row i of _matrix is the embedding of product _ids[i].
+_ids: list[str] = []
+_matrix: np.ndarray = np.zeros((0, EMBEDDING_DIMS), dtype=np.float32)
 
 # Relative pull of each ranking signal. Weights are renormalised over whichever
 # signals are actually active for a given call, so a query with no colour
@@ -37,7 +80,7 @@ W_BRAND = 0.06
 # search even when each individual hit is reasonable.
 MAX_PER_BRAND = 2
 
-# id -> product dict, kept alongside Chroma so lexical scoring and brand/colour
+# id -> product dict, kept alongside the embeddings so lexical scoring and brand/colour
 # checks read real Python values instead of round-tripping through metadata.
 _catalog: dict[str, dict[str, Any]] = {}
 _product_tokens: dict[str, set[str]] = {}
@@ -76,7 +119,7 @@ def available_sizes(product: dict[str, Any]) -> list[str]:
 
 
 def load_catalog() -> int:
-    """Load products from catalog.json into ChromaDB and the in-memory index.
+    """Load products from catalog.json and their embeddings into memory.
 
     Returns:
         Number of products loaded.
@@ -112,28 +155,66 @@ def load_catalog() -> int:
         _product_tokens[p["id"]] = tokens
         _product_styles[p["id"]] = style_families(tokens)
 
-    # upsert, not add: the collection is fetched with get_or_create, so a reload
-    # (or a reimport under the dev server's reloader) must not trip over IDs
-    # that are already there.
-    collection.upsert(
-        ids=[p["id"] for p in products],
-        documents=documents,
-        metadatas=[
-            {
-                "name": p["name"],
-                "brand": p["brand"],
-                "price": p["price"],
-                "color": p["color"],
-                "gender": p["gender"],
-                "image": p["image"],
-                "description": p["description"],
-            }
-            for p in products
-        ],
-    )
+    _load_embeddings([p["id"] for p in products], documents)
 
-    logger.info(f"Loaded {len(products)} products into ChromaDB")
+    logger.info(f"Loaded {len(products)} products ({EMBEDDING_MODEL} embeddings)")
     return len(products)
+
+
+def _load_embeddings(ids: list[str], documents: list[str]) -> None:
+    """Fill _ids/_matrix from the cache, embedding only what's missing or stale."""
+    global _ids, _matrix
+    try:
+        with open(EMBEDDINGS_FILE, "r") as f:
+            cache: dict[str, dict[str, Any]] = json.load(f)
+    except (OSError, ValueError):
+        cache = {}
+
+    hashes = [_text_hash(doc) for doc in documents]
+    stale = [i for i, (pid, h) in enumerate(zip(ids, hashes)) if cache.get(pid, {}).get("hash") != h]
+
+    if stale:
+        logger.info(f"Embedding {len(stale)} products with {EMBEDDING_MODEL}")
+        try:
+            fresh = _embed([documents[i] for i in stale])
+        except Exception as e:
+            # A boot must not die on an API hiccup: those products just rank
+            # with no semantic signal until the next successful start.
+            logger.error(f"Embedding failed, semantic ranking degraded: {e}")
+            fresh = None
+        if fresh is not None:
+            for row, i in zip(fresh, stale):
+                cache[ids[i]] = {"hash": hashes[i], "vector": [round(float(x), 6) for x in row]}
+            try:
+                with open(EMBEDDINGS_FILE, "w") as f:
+                    json.dump({pid: cache[pid] for pid in ids if pid in cache}, f)
+            except OSError as e:
+                logger.warning(f"Could not write {EMBEDDINGS_FILE}: {e}")
+
+    matrix = np.zeros((len(ids), EMBEDDING_DIMS), dtype=np.float32)
+    for i, pid in enumerate(ids):
+        entry = cache.get(pid)
+        if entry and entry.get("hash") == hashes[i]:
+            matrix[i] = entry["vector"]
+    _ids = list(ids)
+    _matrix = matrix
+
+
+def _semantic_ranking(query: str) -> tuple[list[str], list[float]]:
+    """Every product id with its cosine similarity to the query, best first.
+
+    Returns all-zero similarities if the query can't be embedded, so search
+    still works on the lexical and constraint signals alone.
+    """
+    if not _ids:
+        return [], []
+    try:
+        sims = _matrix @ _embed([query])[0]
+    except Exception as e:
+        logger.error(f"Query embedding failed, ranking without semantics: {e}")
+        return list(_ids), [0.0] * len(_ids)
+    order = np.argsort(-sims)
+    return [_ids[i] for i in order], [float(sims[i]) for i in order]
 
 
 load_catalog()
@@ -253,11 +334,7 @@ def search_catalog(
         # The catalogue is small enough to rank end to end, which beats
         # top-N-then-filter: constraints get applied to every product rather
         # than to whichever handful the embedding happened to rank first.
-        total = collection.count()
-        results = collection.query(query_texts=[query], n_results=total)
-
-        ids = results["ids"][0]
-        distances = results["distances"][0]
+        ids, sims = _semantic_ranking(query)
         if not ids:
             logger.info(f"No results for query: {query}")
             return []
@@ -278,8 +355,7 @@ def search_catalog(
 
         # Normalise similarity across this result set so the semantic term
         # occupies the same 0..1 range as every other signal regardless of the
-        # distance metric's absolute scale.
-        sims = [1.0 / (1.0 + d) for d in distances]
+        # similarity metric's absolute scale.
         lo, hi = min(sims), max(sims)
         span = (hi - lo) or 1.0
 

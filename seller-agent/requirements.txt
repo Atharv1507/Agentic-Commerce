@@ -3,5 +3,5 @@ uvicorn==0.52.4
 openai==3.5.0
 razorpay==2.0.1
 python-dotenv==1.2.3
-chromadb==1.5.9
+numpy==2.5.5
 httpx==0.28.1

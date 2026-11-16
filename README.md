@@ -24,7 +24,7 @@ Shopper Agent  (React client, :5173)
 Personal Agent (buyer's agent, :8000) ──── OpenAI (tool-calling loop)
    │  X-Buyer-Key
    ▼
-Seller Agent   (merchant's agent, :8001) ── OpenAI · ChromaDB · Razorpay
+Seller Agent   (merchant's agent, :8001) ── OpenAI · Razorpay
    ▲
    │  any third-party AI buyer agent can use the same API
    │  (discovered via /.well-known/agent.json)
@@ -58,7 +58,7 @@ credentials**. The Seller Agent creates orders and verifies payments.
 ### Seller Agent
 - **Python**, **FastAPI** + **uvicorn**
 - **OpenAI** function calling (`gpt-5-mini` by default)
-- **ChromaDB** (in-memory vector store over a 300-product `catalog.json`) + a custom hybrid ranker
+- **OpenAI embeddings** (cached, numpy cosine search over a 300-product `catalog.json`) + a custom hybrid ranker
 - **Razorpay Python SDK**: orders, payment links, payment verification, webhooks
 - Deterministic rules engine for campaigns (no LLM in pricing)
 - `orders.json` ledger, rebuildable from Razorpay order `notes`
